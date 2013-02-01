@@ -101,7 +101,7 @@ class ExperimentHandler(object):
             if self.savePickle==True:
                 self.saveAsPickle(self.dataFileName)
             if self.saveWideText==True:
-                self.saveAsWideText(self.dataFileName)
+                self.saveAsWideText(self.dataFileName+'.csv', delim=',')
     def addLoop(self, loopHandler):
         """Add a loop such as a `~psychopy.data.TrialHandler` or `~psychopy.data.StairHandler`
         Data from this loop will be included in the resulting data files.
@@ -128,7 +128,9 @@ class ExperimentHandler(object):
         #get names (or identifiers) for all contained loops
         for thisLoop in self.loops:
             theseNames, vals = self._getLoopInfo(thisLoop)
-            names.extend(theseNames)
+            for name in theseNames:
+                if name not in names:
+                    names.append(name)
         return names
     def _getExtraInfo(self):
         """
@@ -221,7 +223,7 @@ class ExperimentHandler(object):
         self.entries.append(this)
         #then create new empty entry for n
         self.thisEntry = {}
-    def saveAsWideText(self, fileName, delim=',',
+    def saveAsWideText(self, fileName, delim=None,
                    matrixOnly=False,
                    appendFile=False):
         """Saves a long, wide-format text file, with one line representing the attributes and data
@@ -240,13 +242,20 @@ class ExperimentHandler(object):
         if os.path.exists(fileName) and writeFormat == 'w':
             logging.warning('Data file, %s, will be overwritten' %fileName)
 
+        if fileName[-4:] in ['.csv', '.CSV']:
+            delim=','
+        else:
+            delim='\t'
+
         if fileName=='stdout':
             f = sys.stdout
         elif fileName[-4:] in ['.csv', '.CSV','.dlm','.DLM', '.tsv','.TSV']:
             f= codecs.open(fileName,writeFormat, encoding = "utf-8")
         else:
-            if delim==',': f= codecs.open(fileName+'.csv',writeFormat, encoding = "utf-8")
-            else: f=codecs.open(fileName+'.dlm',writeFormat, encoding = "utf-8")
+            if delim==',':
+                f= codecs.open(fileName+'.csv',writeFormat, encoding = "utf-8")
+            else:
+                f=codecs.open(fileName+'.dlm',writeFormat, encoding = "utf-8")
 
         names = self._getAllParamNames()
         names.extend(self.dataNames)
@@ -260,7 +269,10 @@ class ExperimentHandler(object):
         for entry in self.entries:
             for name in names:
                 if name in entry.keys():
-                    f.write(u'%s%s' %(entry[name],delim))
+                    if ',' in unicode(entry[name]):
+                        f.write(u'"%s"%s' %(entry[name],delim))
+                    else:
+                        f.write(u'%s%s' %(entry[name],delim))
                 else:
                     f.write(delim)
             f.write('\n')
@@ -367,7 +379,7 @@ class _BaseTrialHandler(object):
     def saveAsText(self,fileName,
                    stimOut=[],
                    dataOut=('n','all_mean','all_std', 'all_raw'),
-                   delim='\t',
+                   delim=None,
                    matrixOnly=False,
                    appendFile=True,
                    summarised=True,
@@ -410,7 +422,14 @@ class _BaseTrialHandler(object):
 
         dataArray = self._createOutputArray(stimOut=[],
             dataOut=dataOut,
-            matrixOnly=False,)
+            matrixOnly=matrixOnly)
+
+        #set default delimiter if none given
+        if delim==None:
+            if fileName[-4:] in ['.csv','.CSV']:
+                delim=','
+            else:
+                delim='\t'
 
         #create the file or print to stdout
         if appendFile: writeFormat='a'
@@ -420,20 +439,18 @@ class _BaseTrialHandler(object):
         elif fileName[-4:] in ['.dlm','.DLM', '.csv', '.CSV']:
             f= codecs.open(fileName,writeFormat, encoding = "utf-8")
         else:
-            if delim==',': f= codecs.open(fileName+'.csv',writeFormat, encoding = "utf-8")
-            else: f=codecs.open(fileName+'.dlm',writeFormat, encoding = "utf-8")
+            if delim==',':
+                f= codecs.open(fileName+'.csv',writeFormat, encoding = "utf-8")
+            else:
+                f=codecs.open(fileName+'.dlm',writeFormat, encoding = "utf-8")
 
         #loop through lines in the data matrix
         for line in dataArray:
             for cellN, entry in enumerate(line):
-                if type(entry) in [float]:
-                    f.write('%.4f' %(entry))
-                elif type(entry) in [int]:
-                    f.write('%i' %(entry))
-                elif entry==None:
-                    f.write('')
+                if delim in unicode(entry):#surround in quotes to prevent effect of delimiter
+                    f.write(u'"%s"' %unicode(entry))
                 else:
-                    f.write(entry)
+                    f.write(unicode(entry))
                 if cellN<(len(line)-1):
                     f.write(delim)
             f.write("\n")#add an EOL at end of each line
@@ -508,7 +525,7 @@ class _BaseTrialHandler(object):
         #create the data array to be sent to the Excel file
         dataArray = self._createOutputArray(stimOut=[],
             dataOut=dataOut,
-            matrixOnly=False,)
+            matrixOnly=matrixOnly)
 
         #import necessary subpackages - they are small so won't matter to do it here
         from openpyxl.workbook import Workbook
@@ -545,7 +562,7 @@ class _BaseTrialHandler(object):
                     entry=''
                 try:
                     ws.cell(_getExcelCellName(col=colN,row=lineN)).value = float(entry)#if it can conver to a number (from numpy) then do it
-                except:#some thi
+                except:
                     ws.cell(_getExcelCellName(col=colN,row=lineN)).value = unicode(entry)#else treat as unicode
 
         ew.save(filename = fileName)
@@ -928,9 +945,17 @@ class TrialHandler(_BaseTrialHandler):
 
                 if strVersion=='()':
                     strVersion="--"# 'no data' in masked array should show as "--"
-                if strVersion[0] in ["[", "("] and strVersion[-1] in ["]", ")"]:
+                #handle list of values (e.g. rt_raw )
+                if len(strVersion) and strVersion[0] in ["[", "("] and strVersion[-1] in ["]", ")"]:
                     strVersion=strVersion[1:-1]#skip first and last chars
-                thisLine.extend(strVersion.split(','))
+                #handle lists of lists (e.g. raw of multiple key presses)
+                if len(strVersion) and strVersion[0] in ["[", "("] and strVersion[-1] in ["]", ")"]:
+                    tup = eval(strVersion) #convert back to a tuple
+                    for entry in tup:
+                        #contents of each entry is a list or tuple so keep in quotes to avoid probs with delim
+                        thisLine.append(unicode(entry))
+                else:
+                    thisLine.extend(strVersion.split(','))
 
         #add self.extraInfo
         if (self.extraInfo != None) and not matrixOnly:
@@ -946,7 +971,7 @@ class TrialHandler(_BaseTrialHandler):
         """
         dataHead=[]#will store list of data headers
         dataAnal=dict([])    #will store data that has been analyzed
-        if type(dataOut)==str: dataout=[dataOut]#don't do list convert or we get a list of letters
+        if type(dataOut)==str: dataOut=[dataOut]#don't do list convert or we get a list of letters
         elif type(dataOut)!=list: dataOut = list(dataOut)
 
         #expand any 'all' dataTypes to be the full list of available dataTypes
@@ -1141,7 +1166,7 @@ class TrialHandler(_BaseTrialHandler):
         for trial in dataOut:
             nextLine = ''
             for parameterName in header:
-                nextLine = nextLine + str(trial[parameterName]) + delim
+                nextLine = nextLine + unicode(trial[parameterName]) + delim
             nextLine = nextLine[:-1] # remove the final orphaned tab character
             f.write(nextLine + '\n')
 
@@ -1605,7 +1630,6 @@ class StairHandler(_BaseTrialHandler):
         if (self._nextIntensity < self.minVal) and self.minVal is not None:
             self._nextIntensity = self.minVal
 
-
     def saveAsText(self,fileName,
                    delim='\t',
                    matrixOnly=False,
@@ -1794,14 +1818,13 @@ class StairHandler(_BaseTrialHandler):
 
 
 class QuestHandler(StairHandler):
-    """Class that implements the Quest algorithm using python code from XXX.  f
-    Like StairHandler, it handles the selection of the next trial and report
-    current values etc. Calls to nextTrial() will fetch the next object given
-    to this handler, according to the method specified.
+    """Class that implements the Quest algorithm for quick measurement of
+    psychophysical thresholds.
 
-    The staircase will terminate when *nTrials* or *XXX* has been exceeded.
+    Uses Andrew Straw's `QUEST <http://www.visionegg.org/Quest>`_, which is a
+    Python port of Denis Pelli's Matlab code.
 
-    Measure threshold using a Weibull psychometric function. Currently, it is
+    Measures threshold using a Weibull psychometric function. Currently, it is
     not possible to use a different psychometric function.
 
     Threshold 't' is measured on an abstract 'intensity' scale, which
@@ -1832,7 +1855,7 @@ class QuestHandler(StairHandler):
             core.wait(0.5)
             # get response
             ...
-            # add response
+            # inform QUEST of the response, needed to calculate next level
             staircase.addData(thisResp)
         ...
         # can now access 1 of 3 suggested threshold levels
@@ -2108,7 +2131,7 @@ class QuestHandler(StairHandler):
             self.intensities.append(self._nextIntensity)
             return self._nextIntensity
         else:
-            sef._terminate()
+            self._terminate()
 
     def _checkFinished(self):
         """checks if we are finished
@@ -2207,22 +2230,23 @@ class MultiStairHandler(_BaseTrialHandler):
     def _checkArguments(self):
         #did we get a conditions parameter, correctly formatted
         if type(self.conditions) not in [list]:
-            raise TypeError('conditions parameter to MultiStairHandler should be a list, not a %s' %type(conditions))
+            logging.error('conditions parameter to MultiStairHandler should be a list, not a %s' %type(self.conditions))
+            return
         c0=self.conditions[0]
         if type(c0)!=dict:
-            raise TypeError('conditions to MultiStairHandler should be a list of python dictionaries' + \
+            logging.error('conditions to MultiStairHandler should be a list of python dictionaries' + \
                 ', not a list of %ss' %type(c0))
         #did conditions contain the things we need?
         params = c0.keys()
         if self.type in ['simple','quest']:
             if 'startVal' not in params:
-                raise ValueError('MultiStairHandler needs a param called `startVal` in conditions')
+                logging.error('MultiStairHandler needs a param called `startVal` in conditions')
             if 'label' not in params:
-                raise ValueError('MultiStairHandler needs a param called `label` in conditions')
+                logging.error('MultiStairHandler needs a param called `label` in conditions')
             if 'startValSd' not in params and self.type=='quest':
-                raise ValueError("MultiStairHandler('quest') needs a param called `startValSd` in conditions")
+                logging.error("MultiStairHandler('quest') needs a param called `startValSd` in conditions")
         else:
-            raise ValueError("MultiStairHandler `stairType` should be 'simple' or 'quest', not '%s'" %self.type)
+            logging.error("MultiStairHandler `stairType` should be 'simple' or 'quest', not '%s'" %self.type)
     def _createStairs(self):
         if self.type=='simple':
             defaults = {'nReversals':None, 'stepSizes':4, 'nTrials':self.nTrials,
@@ -2370,7 +2394,7 @@ class MultiStairHandler(_BaseTrialHandler):
             #make a filename
             label = thisStair.condition['label']
             thisStair.saveAsExcel(fileName=fileName, sheetName=label,
-                matrixOnly=False, appendFile=append)
+                matrixOnly=matrixOnly, appendFile=append)
     def saveAsText(self,fileName,
                    delim='\t',
                    matrixOnly=False):
@@ -2974,7 +2998,10 @@ def getDateStr(format="%Y_%b_%d_%H%M"):
         data.getDateStr(format=locale.nl_langinfo(locale.D_T_FMT))
     """
     now = time.strftime(format, time.localtime())
-    now_dec = codecs.utf_8_decode(now)[0]
+    try:
+        now_dec = codecs.utf_8_decode(now)[0]
+    except UnicodeDecodeError:
+        now_dec = time.strftime("%Y_%m_%d_%H%M", time.localtime())  # '2011_03_16_1307'
 
     return now_dec
 

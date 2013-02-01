@@ -179,7 +179,11 @@ def _uniqFileName(filename):
 
 def _getMetaData(datafile, dataEncFile, pubkey, encMethod):
     """Return info about an encryption context, as a multiline string"""
-    now = codecs.utf_8_decode(time.strftime("%Y_%b_%d_%H%M", time.localtime()))[0]
+    try:
+        now = codecs.utf_8_decode(time.strftime("%Y_%b_%d_%H%M", time.localtime()))[0]
+    except UnicodeDecodeError:
+        # use an all-numeric date (to sidestep the unicode error)
+        now = codecs.utf_8_decode(time.strftime("%Y_%m_%d_%H%M", time.localtime()))[0]
     md = []
     md.append('orig file path: ' + os.path.abspath(datafile) )
     md.append('HMAC-sha256 of encrypted file: %s' % _sha256b64(dataEncFile) )
@@ -192,8 +196,8 @@ def _getMetaData(datafile, dataEncFile, pubkey, encMethod):
     if sys.platform in ['darwin']:
         OSXver, _, architecture = platform.mac_ver()
         platInfo = 'darwin ' + OSXver + ' ' + architecture
-    elif sys.platform in ['linux2']:
-        platInfo = 'linux2 '+platform.release()
+    elif sys.platform.startswith('linux'):
+        platInfo = 'linux '+platform.release()
     elif sys.platform in ['win32']:
         platInfo = 'windowsversion=' + repr(sys.getwindowsversion())
     else:

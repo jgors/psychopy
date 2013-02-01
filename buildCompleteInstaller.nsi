@@ -2,7 +2,7 @@
 
 ; HM NIS Edit Wizard helper defines
 !define PRODUCT_NAME "PsychoPy2"
-!define PRODUCT_VERSION "1.73.02"
+!define PRODUCT_VERSION "1.76.00"
 !define PRODUCT_PUBLISHER "Jon Peirce"
 !define PRODUCT_WEB_SITE "http://www.psychopy.org"
 ;!define PRODUCT_DIR_REGKEY "Software\Microsoft\Windows\CurrentVersion\App Paths\AppMainExe.exe"
@@ -83,13 +83,13 @@ Section "PsychoPy" SEC01
   SetOverwrite on
   ;AppDir is the path to the psychopy app folder
   Var /GLOBAL AppDir
-  StrCpy $AppDir "$INSTDIR\Lib\site-packages\PsychoPy-${PRODUCT_VERSION}-py2.6.egg\psychopy\app"
+  StrCpy $AppDir "$INSTDIR\Lib\site-packages\PsychoPy-${PRODUCT_VERSION}-py2.7.egg\psychopy\app"
 
-  File /r "C:\python26\*.*"
+  File /r "C:\python27\*.*"
   File /r "windlls\*.dll"
 ; avbin to system32
   !insertmacro InstallLib DLL NOTSHARED NOREBOOT_PROTECTED avbin.dll $SYSDIR\avbin.dll $SYSDIR
-  
+
 ; Shortcuts
   !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
   CreateDirectory "$SMPROGRAMS\$ICONS_GROUP"
@@ -138,7 +138,7 @@ Section Uninstall
   Delete "$INSTDIR\uninst.exe"
   RMDir /r "$INSTDIR"
   ; NB we don't uninstall avbin - it might be used by another python installation
-  
+
   ;shortcuts
   Delete "$SMPROGRAMS\$ICONS_GROUP\Uninstall.lnk"
   Delete "$SMPROGRAMS\$ICONS_GROUP\www.psychopy.org.lnk"

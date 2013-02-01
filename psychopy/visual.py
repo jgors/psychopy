@@ -4,7 +4,7 @@
 # Copyright (C) 2012 Jonathan Peirce
 # Distributed under the terms of the GNU General Public License (GPL).
 
-import sys, os, platform, time, glob, copy
+import sys, os, glob, copy
 #on windows try to load avbin now (other libs can interfere)
 if sys.platform=='win32':
     #make sure we also check in SysWOW64 if on 64-bit windows
@@ -123,6 +123,7 @@ class Window:
                  viewOri  = 0.0,
                  waitBlanking=True,
                  allowStencil=False,
+                 stereo=False,
                  name='window1'):
         """
         :Parameters:
@@ -161,6 +162,10 @@ class Window:
             allowStencil : True or *False*
                 When set to True, this allows operations that use the OpenGL stencil buffer
                 (notably, allowing the class:`~psychopy.visual.Aperture` to be used).
+            stereo : True or *False*
+                If True and your graphics card supports quad buffers then this will be enabled.
+                You can switch between left and right-eye scenes for drawing operations using
+                :func:`~psychopy.visual.Window.setBuffer`
 
             :note: Preferences. Some parameters (e.g. units) can now be given default values in the user/site preferences and these will be used if None is given here. If you do specify a value here it will take precedence over preferences.
 
@@ -215,6 +220,7 @@ class Window:
             self.viewPos = numpy.array(viewPos, numpy.float64)
         else: self.viewPos = viewPos
         self.viewOri  = float(viewOri)
+        self.stereo = stereo #use quad buffer if requested (and if possible)
 
         #setup bits++ if possible
         self.bitsMode = bitsMode #could be [None, 'fast', 'slow']
@@ -511,6 +517,14 @@ class Window:
             logging.log(msg=logEntry['msg'], level=logEntry['level'], t=now, obj=logEntry['obj'])
         self._toLog = []
 
+        #    If self.waitBlanking is True, then return the time that
+        # GL.glFinish() returned, set as the 'now' variable. Otherwise
+        # return None as before
+        #
+        if self.waitBlanking is True:
+            return now
+
+
     def update(self):
         """Deprecated: use Window.flip() instead
         """
@@ -545,6 +559,35 @@ class Window:
         for frame in range(flips-1):
             self.flip(clearBuffer=False)
         self.flip(clearBuffer=clearBuffer)
+
+    def setBuffer(self, buffer, clear=True):
+        """Choose which buffer to draw to ('left' or 'right').
+
+        Requires the Window to be initialised with stereo=True and requires a
+        graphics card that supports quad buffering (e,g nVidia Quadro series)
+
+        PsychoPy always draws to the back buffers, so 'left' will use GL_BACK_LEFT
+        This then needs to be flipped once both eye's buffers have been rendered.
+
+        Typical usage::
+
+            win = visual.Window(...., stereo=True)
+            while True:
+                win.setBuffer('left',clear=True) #clear may not actually be needed
+                #do drawing for left eye
+                win.setBuffer('right', clear=True)
+                #do drawing for right eye
+                win.flip()
+
+        """
+        if buffer=='left':
+            GL.glDrawBuffer(GL.GL_BACK_LEFT)
+        elif buffer=='right':
+            GL.glDrawBuffer(GL.GL_BACK_RIGHT)
+        else:
+            raise "Unknown buffer '%s' requested in Window.setBuffer" %buffer
+        if clear:
+            self.clearBuffer()
 
     def clearBuffer(self):
         """Clear the back buffer (to which you are currently drawing) without flipping the window.
@@ -634,13 +677,7 @@ class Window:
                     ' You can use quicktime movies (.mov) instead though.')
             makeMovies.makeMPEG(fileName, self.movieFrames, codec=mpgCodec)
         elif fileExt in ['.mov', '.MOV']:
-            if sys.platform!='darwin':
-                raise IOError('Quicktime movies are only currently available under OSX.'+\
-                    ' Try using mpeg compression instead (.mpg).')
-            mov = makeMovies.QuicktimeMovie(fileName, fps=fps)
-            for frame in self.movieFrames:
-                mov.addFrame(frame)
-            mov.save()
+            raise NotImplementedError, "Support for Quicktime movies has been removed (at least for now). You need to export your frames as images (e.g. png files) and combine them yourself (e.g. with ffmpeg)"
         elif len(self.movieFrames)==1:
             self.movieFrames[0].save(fileName)
         else:
@@ -857,15 +894,18 @@ class Window:
     def _setupPyglet(self):
         self.winType = "pyglet"
         if self.allowStencil:
-            config = GL.Config(depth_size=8, double_buffer=True, stencil_size=8)
+            stencil_size=8
         else:
-            config = GL.Config(depth_size=8, double_buffer=True)
+            stencil_size=0
+        config = GL.Config(depth_size=8, double_buffer=True,
+            stencil_size=stencil_size, stereo=self.stereo) #options that the user might want
         allScrs = pyglet.window.get_platform().get_default_display().get_screens()
-        if len(allScrs)>self.screen:
+        if len(allScrs)<int(self.screen)+1:  # Screen (from Exp Settings) is 1-indexed, so the second screen is Screen 1
+            logging.warn("Requested an unavailable screen number - using first available.")
+            thisScreen = allScrs[0]
+        else:
             thisScreen = allScrs[self.screen]
             logging.info('configured pyglet screen %i' %self.screen)
-        else:
-            logging.error("Requested an unavailable screen number")
         #if fullscreen check screen size
         if self._isFullScr:
             self._checkMatchingSizes(self.size,[thisScreen.width, thisScreen.height])
@@ -880,11 +920,15 @@ class Window:
                                               screen=thisScreen,
                                               style=style
                                           )
+        #provide warning if stereo buffers are requested but unavailable
+        if self.stereo and not GL.gl_info.have_extension(GL.GL_STEREO):
+            logging.warning('A stereo window was requested but the graphics card does not appear to support GL_STEREO')
         #add these methods to the pyglet window
         self.winHandle.setGamma = psychopy.gamma.setGamma
         self.winHandle.setGammaRamp = psychopy.gamma.setGammaRamp
         self.winHandle.getGammaRamp = psychopy.gamma.getGammaRamp
         self.winHandle.set_vsync(True)
+        self.winHandle.on_text = psychopy.event._onPygletText
         self.winHandle.on_key_press = psychopy.event._onPygletKey
         self.winHandle.on_mouse_press = psychopy.event._onPygletMousePress
         self.winHandle.on_mouse_release = psychopy.event._onPygletMouseRelease
@@ -899,7 +943,7 @@ class Window:
         self.winHandle.set_location(self.pos[0]+thisScreen.x, self.pos[1]+thisScreen.y)#add the necessary amount for second screen
 
         try: #to load an icon for the window
-            iconFile = os.path.join(psychopy.__path__[0], 'psychopy.png')
+            iconFile = os.path.join(psychopy.prefs.paths['resources'], 'psychopy.ico')
             icon = pyglet.image.load(filename=iconFile)
             self.winHandle.set_icon(icon)
         except: pass#doesn't matter
@@ -1028,11 +1072,11 @@ class Window:
 
         #attach texture to the frame buffer
         FB.glFramebufferTexture2DEXT (FB.GL_FRAMEBUFFER_EXT, GL.GL_COLOR_ATTACHMENT0_EXT,
-                                      GL.GL_TEXTURE_2D, self.frameTexture, 0);
+                                      GL.GL_TEXTURE_2D, self.frameTexture, 0)
         FB.glFramebufferRenderbufferEXT(FB.GL_FRAMEBUFFER_EXT, GL.GL_DEPTH_ATTACHMENT_EXT,
-                                        FB.GL_RENDERBUFFER_EXT, self.depthBuffer);
+                                        FB.GL_RENDERBUFFER_EXT, self.depthBuffer)
 
-        status = FB.glCheckFramebufferStatusEXT (FB.GL_FRAMEBUFFER_EXT);
+        status = FB.glCheckFramebufferStatusEXT (FB.GL_FRAMEBUFFER_EXT)
         if status != FB.GL_FRAMEBUFFER_COMPLETE_EXT:
             logging.warning("Error in framebuffer activation")
             return
@@ -1099,7 +1143,7 @@ class Window:
         return None
 
 class _BaseVisualStim:
-    """A template for a stimulus class, on which PatchStim, TextStim etc... are based.
+    """A template for a stimulus class, on which GratingStim, TextStim etc... are based.
     Not finished...?
     """
     def __init__(self, win, units=None, name='', autoLog=True):
@@ -1137,11 +1181,63 @@ class _BaseVisualStim:
         """
         self._set('ori',val=newOri, op=operation, log=log)
     def setOpacity(self,newOpacity,operation='', log=True):
-        self._set('opacity', newOpacity, operation)
+        """Set the opacity of the stimulus.
+        :parameters:
+            newOpacity: float between 0 (transparent) and 1 (opaque).
+
+            operation: one of '+','-','*','/', or '' for no operation (simply replace value)
+        """
+        if not 0 <= newOpacity <= 1 and log:
+            logging.warning('Setting opacity outside range 0.0 - 1.0 has no additional effect')
+
+        self._set('opacity', newOpacity, operation, log=log)
+
         #opacity is coded by the texture, if not using shaders
-        if not self._useShaders and hasattr(self,'setMask'):
-            #update mask with new opacity
-            self.setMask(self._maskName, log=False)
+        if hasattr(self, '_useShaders') and not self._useShaders:
+            if hasattr(self,'setMask'):
+                self.setMask(self._maskName, log=False)
+
+    def setContrast(self, newContrast, operation='', log=True):
+        """"
+        Set the contrast of the stimulus.
+
+        :Parameters:
+
+        newContrast : float
+            The contrast of the stimulus::
+
+                # 0.0 to 1.0 decreases contrast #Here
+                # 1.0 means unchanged
+
+                # 0.0 to -1.0 inverts with decreased contrast
+                # -1.0 means exactly inverted.
+
+                # >1.0 increases contrast. (See warning below)
+                # <-1.0 inverts with increased contrast (See warning below)
+
+            WARNING. Setting contrast below -1 or above 1 will produce strange results if this forces the stimulus to blacker-than-black or whiter-than-white.
+
+        operation : one of '+','-','*','/', or '' for no operation (simply replace value)
+        """
+
+        self._set('contrast', newContrast, operation, log=log)
+
+        # If we don't have shaders we need to rebuild the stimulus
+        if hasattr(self, '_useShaders'):
+            if not self._useShaders:
+                if self.__class__.__name__ == 'TextStim':
+                    self.setText(self.text)
+                if self.__class__.__name__ == 'ImageStim':
+                    self.setImage(self._imName)
+                if self.__class__.__name__ in ('GratingStim', 'RadialStim'):
+                    self.setTex(self._texName)
+                if self.__class__.__name__ in ('ShapeStim','DotStim'):
+                    pass # They work fine without shaders?
+                elif log:
+                    logging.warning('Called setContrast while _useShaders = False but stimulus was not rebuild. Contrast might remain unchanged.')
+        elif log:
+            logging.warning('Called setContrast() on class where _useShaders was undefined. Contrast might remain unchanged')
+
     def setDKL(self, newDKL, operation=''):
         """DEPRECATED since v1.60.05: Please use setColor
         """
@@ -1180,14 +1276,14 @@ class _BaseVisualStim:
 
             You can also provide a triplet of values, which refer to the coordinates
             in one of the :ref:`colorspaces`. If no color space is specified then the color
-            space most recently used for this stimulus is used again.
+            space most recently used for this stimulus is used again.::
 
                 myStim.setColor([1.0,-1.0,-1.0], 'rgb')#a red color in rgb space
                 myStim.setColor([0.0,45.0,1.0], 'dkl') #DKL space with elev=0, azimuth=45
                 myStim.setColor([0,0,255], 'rgb255') #a blue stimulus using rgb255 space
 
             Lastly, a single number can be provided, x, which is equivalent to providing
-            [x,x,x].
+            [x,x,x].::
 
                 myStim.setColor(255, 'rgb255') #all guns o max
 
@@ -1200,7 +1296,7 @@ class _BaseVisualStim:
         operation : one of '+','-','*','/', or '' for no operation (simply replace value)
 
             for colors specified as a triplet of values (or single intensity value)
-            the new value will perform this operation on the previous color
+            the new value will perform this operation on the previous color::
 
                 thisStim.setColor([1,1,1],'rgb255','+')#increment all guns by 1 value
                 thisStim.setColor(-1, 'rgb', '*') #multiply the color by -1 (which in this space inverts the contrast)
@@ -1210,14 +1306,6 @@ class _BaseVisualStim:
                     rgbAttrib='rgb', #or 'fillRGB' etc
                     colorAttrib='color',
                     log=log)
-    def setContr(self, newContr, operation='', log=True):
-        """Set the contrast of the stimulus
-        """
-        self._set('contr', newContr, operation, log)
-        #if we don't have shaders we need to rebuild the texture
-        if not self._useShaders:
-            if hasattr(self,'_texName'): self.setTex(self._texName)
-            elif hasattr(self,'_imName'): self.setIm(self._imName)
     def _set(self, attrib, val, op='', log=True):
         """
         Deprecated. Use methods specific to the parameter you want to set
@@ -1251,7 +1339,7 @@ class _BaseVisualStim:
         """
         #NB TextStim overrides this function, so changes here may need changing there too
         if val==True and self.win._haveShaders==False:
-            logging.error("Shaders were requested for PatchStim but aren't available. Shaders need OpenGL 2.0+ drivers")
+            logging.error("Shaders were requested but aren't available. Shaders need OpenGL 2.0+ drivers")
         if val!=self._useShaders:
             self._useShaders=val
             if hasattr(self,'_texName'):
@@ -1329,6 +1417,89 @@ class _BaseVisualStim:
 
         """
         self.autoLog=val
+    def contains(self, x, y=None):
+        """Determines if a point x,y is inside the extent of the stimulus.
+
+        Can accept: a) two args, x and y; b) one arg, as a point (x,y) that is
+        list-like; or c) an object with a getPos() method that returns x,y, such
+        as a mouse. Returns True if the point is within the area defined by `vertices`.
+        This handles complex shapes, including concavities and self-crossings.
+
+        Note that, if your stimulus uses a mask (such as a Gaussian blob) then
+        this is not accounted for by the `contains` method; the extent of the
+        stmulus is determined purely by the size, pos and orientation settings
+        (and by the vertices for shape stimuli).
+
+        See coder demo, shapeContains.py
+        """
+        if self.needVertexUpdate:
+            self._calcVerticesRendered()
+        if hasattr(x, 'getPos'):
+            x, y = x.getPos()
+        elif type(x) in [list, tuple, numpy.ndarray]:
+            x, y = x[0], x[1]
+        if self.units in ['deg','degs']:
+            x, y = psychopy.misc.deg2pix(numpy.array((x, y)), self.win.monitor)
+        elif self.units == 'cm':
+            x, y = psychopy.misc.cm2pix(numpy.array((x, y)), self.win.monitor)
+        if self.ori:
+            oriRadians = numpy.radians(self.ori)
+            sinOri = numpy.sin(oriRadians)
+            cosOri = numpy.cos(oriRadians)
+            x0, y0 = x-self._posRendered[0], y-self._posRendered[1]
+            x = x0 * cosOri - y0 * sinOri + self._posRendered[0]
+            y = x0 * sinOri + y0 * cosOri + self._posRendered[1]
+
+        return pointInPolygon(x, y, self)
+
+    def _getPolyAsRendered(self):
+        """return a list of vertices as rendered; used by overlaps(), centroid()
+        """
+        oriRadians = numpy.radians(self.ori)
+        sinOri = numpy.sin(-oriRadians)
+        cosOri = numpy.cos(-oriRadians)
+        x = self._verticesRendered[:,0] * cosOri - self._verticesRendered[:,1] * sinOri
+        y = self._verticesRendered[:,0] * sinOri + self._verticesRendered[:,1] * cosOri
+        return numpy.column_stack((x,y)) + self._posRendered
+
+    def overlaps(self, polygon):
+        """Determines if this stimulus intersects another one. If `polygon` is
+        another stimulus instance, then the vertices and location of that stimulus
+        will be used as the polygon. Overlap detection is only approximate; it
+        can fail with pointy shapes. Returns `True` if the two shapes overlap.
+
+        Note that, if your stimulus uses a mask (such as a Gaussian blob) then
+        this is not accounted for by the `overlaps` method; the extent of the
+        stimulus is determined purely by the size, pos, and orientation settings
+        (and by the vertices for shape stimuli).
+
+        See coder demo, shapeContains.py
+        """
+        if self.needVertexUpdate:
+            self._calcVerticesRendered()
+        if self.ori:
+            polyRendered = self._getPolyAsRendered()
+            return polygonsOverlap(polyRendered, polygon)
+        else:
+            return polygonsOverlap(self, polygon)
+
+    def _getDesiredRGB(self, rgb, colorSpace, contrast):
+        """ Convert color to RGB while adding contrast
+        Requires self.rgb, self.colorSpace and self.contrast"""
+        # Ensure that we work on 0-centered color (to make negative contrast values work)
+        if colorSpace not in ['rgb','dkl','lms','hsv']:
+            rgb = (rgb/255.0)*2-1
+
+
+        # Convert to RGB in range 0:1 and scaled for contrast
+        desiredRGB = (rgb*contrast+1)/2.0
+
+        # Check that boundaries are not exceeded
+        if numpy.any(desiredRGB>1.0) or numpy.any(desiredRGB<0):
+            logging.warning('Desired color %s (in RGB 0->1 units) falls outside the monitor gamut. Drawing blue instead'%desiredRGB) #AOH
+            desiredRGB=[0.0,0.0,1.0]
+
+        return desiredRGB
 
 class DotStim(_BaseVisualStim):
     """
@@ -1366,7 +1537,8 @@ class DotStim(_BaseVisualStim):
                  rgb    =None,
                  color=(1.0,1.0,1.0),
                  colorSpace='rgb',
-                 opacity =1.0,
+                 opacity = 1.0,
+                 contrast = 1.0,
                  depth  =0,
                  element=None,
                  signalDots='same',
@@ -1423,8 +1595,14 @@ class DotStim(_BaseVisualStim):
                 The color space controlling the interpretation of the `color`
                 See :ref:`colorspaces`
 
-            opacity : float
+            opacity : float (default= *1.0* )
                 1.0 is opaque, 0.0 is transparent
+
+            contrast: float (default= *1.0* )
+                How far the stimulus deviates from the middle grey.
+                Contrast can vary -1:1 (this is a multiplier for the
+                values given in the color description of the stimulus).
+
             depth:
 
                 The depth argument is deprecated and may be removed in future versions.
@@ -1432,7 +1610,7 @@ class DotStim(_BaseVisualStim):
 
             element : *None* or a visual stimulus object
                 This can be any object that has a ``.draw()`` method and a
-                ``.setPos([x,y])`` method (e.g. a PatchStim, TextStim...)!!
+                ``.setPos([x,y])`` method (e.g. a GratingStim, TextStim...)!!
                 See `ElementArrayStim` for a faster implementation of this idea.
 
             name : string
@@ -1458,11 +1636,12 @@ class DotStim(_BaseVisualStim):
         self.fieldShape = fieldShape
         self.dir = dir
         self.speed = speed
-        self.opacity = opacity
         self.element = element
         self.dotLife = dotLife
         self.signalDots = signalDots
         self.noiseDots = noiseDots
+        self.opacity = float(opacity)
+        self.contrast = float(contrast)
 
         #'rendered' coordinates represent the stimuli in the scaled coords of the window
         #(i.e. norm for units==norm, but pix for all other units)
@@ -1603,10 +1782,9 @@ class DotStim(_BaseVisualStim):
             GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
 
             GL.glVertexPointer(2, GL.GL_DOUBLE, 0, self._dotsXYRendered.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
-            if self.colorSpace in ['rgb','dkl','lms','hsv']:
-                GL.glColor4f(self.rgb[0]/2.0+0.5, self.rgb[1]/2.0+0.5, self.rgb[2]/2.0+0.5, 1.0)
-            else:
-                GL.glColor4f(self.rgb[0]/255.0, self.rgb[1]/255.0, self.rgb[2]/255.0, 1.0)
+            desiredRGB = self._getDesiredRGB(self.rgb, self.colorSpace, self.contrast)
+
+            GL.glColor4f(desiredRGB[0], desiredRGB[1], desiredRGB[2], self.opacity)
             GL.glEnableClientState(GL.GL_VERTEX_ARRAY)
             GL.glDrawArrays(GL.GL_POINTS, 0, self.nDots)
             GL.glDisableClientState(GL.GL_VERTEX_ARRAY)
@@ -1716,10 +1894,10 @@ class SimpleImageStim:
     """A simple stimulus for loading images from a file and presenting at exactly
     the resolution and color in the file (subject to gamma correction if set).
 
-    Unlike the PatchStim, this type of stimulus cannot be rescaled, rotated or
+    Unlike the ImageStim, this type of stimulus cannot be rescaled, rotated or
     masked (although flipping horizontally or vertically is possible). Drawing will
     also tend to be marginally slower, because the image isn't preloaded to the
-    graphics card. The advantage, however is that the stimulus will always be in its
+    graphics card. The slight advantage, however is that the stimulus will always be in its
     original aspect ratio, with no interplotation or other transformation.
 
     SimpleImageStim does not support a depth parameter (the OpenGL method
@@ -1733,8 +1911,6 @@ class SimpleImageStim:
                  image     ="",
                  units   ="",
                  pos     =(0.0,0.0),
-                 contrast=1.0,
-                 opacity=1.0,
                  flipHoriz=False,
                  flipVert=False,
                  name='', autoLog=True):
@@ -1756,12 +1932,6 @@ class SimpleImageStim:
                 The origin is the screen centre, the units are determined
                 by units (see above). Stimuli can be position beyond the
                 window!
-            contrast :
-                How far the stimulus deviates from the middle grey.
-                Contrast can vary -1:1 (this is a multiplier for the
-                values given in the color description of the stimulus)
-            opacity :
-                1.0 is opaque, 0.0 is transparent
             name : string
                 The name of the object to be using during logged messages about
                 this stim
@@ -1781,12 +1951,20 @@ class SimpleImageStim:
         if win._haveShaders: self._useShaders=True#by default, this is a good thing
         else: self._useShaders=False
 
-        self.contrast = float(contrast)
-        self.opacity = opacity
         self.pos = numpy.array(pos, float)
         self.setImage(image)
+        #check image size against window size
+        if (self.size[0]>self.win.size[0]) or (self.size[1]>self.win.size[1]):
+            logging.warning("Image size (%s, %s)  was larger than window size (%s, %s). Will draw black screen." % (self.size[0], self.size[1], self.win.size[0], self.win.size[1]))
 
-        #flip if necess
+        #check position with size, warn if stimuli not fully drawn
+        if ((self.pos[0]+(self.size[0]/2.0) > self.win.size[0]/2.0) or (self.pos[0]-(self.size[0]/2.0) < -self.win.size[0]/2.0)):
+            logging.warning("Image position and width mean the stimuli does not fit the window in the X direction.")
+
+        if ((self.pos[1]+(self.size[1]/2.0) > self.win.size[1]/2.0) or (self.pos[1]-(self.size[1]/2.0) < -self.win.size[1]/2.0)):
+            logging.warning("Image position and height mean the stimuli does not fit the window in the Y direction.")
+
+        #flip if necessary
         self.flipHoriz=False#initially it is false, then so the flip according to arg above
         self.setFlipHoriz(flipHoriz)
         self.flipVert=False#initially it is false, then so the flip according to arg above
@@ -1820,7 +1998,7 @@ class SimpleImageStim:
         """
         #NB TextStim overrides this function, so changes here may need changing there too
         if val==True and self.win._haveShaders==False:
-            logging.error("Shaders were requested for PatchStim but aren't available. Shaders need OpenGL 2.0+ drivers")
+            logging.error("Shaders were requested but aren't available. Shaders need OpenGL 2.0+ drivers")
         if val!=self._useShaders:
             self._useShaders=val
             self.setImage()
@@ -1952,7 +2130,7 @@ class GratingStim(_BaseVisualStim):
     """Stimulus object for drawing arbitrary bitmaps that can repeat (cycle) in either dimension
     One of the main stimuli for PsychoPy.
 
-    Formally PatchStim is just a texture behind an optional
+    Formally GratingStim is just a texture behind an optional
     transparency mask (an 'alpha mask'). Both the texture and mask can be
     arbitrary bitmaps and their combination allows an enormous variety of
     stimuli to be drawn in realtime.
@@ -1960,27 +2138,24 @@ class GratingStim(_BaseVisualStim):
     **Examples**::
 
         myGrat = GratingStim(tex='sin',mask='circle') #gives a circular patch of grating
-        myGabor = GratingStim(tex='sin',mask='gauss') #gives a 'Gabor' patchgrating
+        myGabor = GratingStim(tex='sin',mask='gauss') #gives a 'Gabor'
 
-    An GratingStim can be rotated scaled and shifted in position, its texture can
+    A GratingStim can be rotated scaled and shifted in position, its texture can
     be drifted in X and/or Y and it can have a spatial frequency in X and/or Y
     (for an image file that simply draws multiple copies in the patch).
 
-    Also since transparency can be controlled two PatchStims can combine e.g.
+    Also since transparency can be controlled two GratingStims can combine e.g.
     to form a plaid.
 
     **Using GratingStim with images from disk (jpg, tif, png...)**
 
     Ideally texture images to be rendered should be square with 'power-of-2' dimensions
-    e.g. 16x16, 128x128. Any image that is not will be upscaled (with linear interp)
+    e.g. 16x16, 128x128. Any image that is not will be upscaled (with linear interpolation)
     to the nearest such texture by PsychoPy. The size of the stimulus should be
     specified in the normal way using the appropriate units (deg, pix, cm...). Be
     sure to get the aspect ratio the same as the image (if you don't want it
     stretched!).
 
-    **Why can't I have a normal image, drawn pixel-by-pixel?** PatchStims are
-    rendered using OpenGL textures. This is more powerful than using simple screen
-    blitting - it allows the rotation, masking, transparency to work.
     """
     def __init__(self,
                  win,
@@ -2082,12 +2257,12 @@ class GratingStim(_BaseVisualStim):
                 the color space controlling the interpretation of the `color`
                 See :ref:`colorspaces`
 
-            contrast:
+            contrast: float (default= *1.0* )
                 How far the stimulus deviates from the middle grey.
                 Contrast can vary -1:1 (this is a multiplier for the
                 values given in the color description of the stimulus).
 
-            opacity:
+            opacity: float (default= *1.0* )
                 1.0 is opaque, 0.0 is transparent
 
             depth:
@@ -2115,7 +2290,7 @@ class GratingStim(_BaseVisualStim):
         self.ori = float(ori)
         self.texRes = texRes #must be power of 2
         self.contrast = float(contrast)
-        self.opacity = opacity
+        self.opacity = float(opacity)
         self.interpolate=interpolate
         self.origSize=None#if an image texture is loaded this will be updated
 
@@ -2227,13 +2402,6 @@ class GratingStim(_BaseVisualStim):
     def setPhase(self,value, operation='', log=True):
         self._set('phase', value, operation, log=log)
         self.needUpdate = 1
-
-    def setContrast(self,value,operation='', log=True):
-        self._set('contrast', value, operation, log=log)
-        #if we don't have shaders we need to rebuild the texture
-        if not self._useShaders:
-            self.setTex(self._texName, log=False)
-
     def setTex(self,value, log=True):
         self._texName = value
         createTexture(value, id=self.texID, pixFormat=GL.GL_RGB, stim=self,
@@ -2273,13 +2441,7 @@ class GratingStim(_BaseVisualStim):
         GL.glRotatef(-self.ori,0.0,0.0,1.0)
         #the list just does the texture mapping
 
-        if self.colorSpace in ['rgb','dkl','lms','hsv']: #these spaces are 0-centred
-            desiredRGB = (self.rgb*self.contrast+1)/2.0#RGB in range 0:1 and scaled for contrast
-            if numpy.any(desiredRGB>1.0) or numpy.any(desiredRGB<0):
-                logging.warning('Desired color %s (in RGB 0->1 units) falls outside the monitor gamut. Drawing blue instead'%desiredRGB) #AOH
-                desiredRGB=[0.0,0.0,1.0]
-        else:
-            desiredRGB = (self.rgb*self.contrast)/255.0
+        desiredRGB = self._getDesiredRGB(self.rgb, self.colorSpace, self.contrast)
         GL.glColor4f(desiredRGB[0],desiredRGB[1],desiredRGB[2], self.opacity)
 
         if self.needUpdate: self._updateList()
@@ -2432,12 +2594,13 @@ class GratingStim(_BaseVisualStim):
 class PatchStim(GratingStim):
     def __init__(self, *args, **kwargs):
         """
-        Deprecated (as of version 1.74.00): please use the :class:`GratingStim` or the :class:`ImageStim` classes.
+        Deprecated (as of version 1.74.00): please use the :class:`~psychopy.visual.GratingStim` or the :class:`~psychopy.visual.ImageStim` classes.
 
         The GratingStim has identical abilities to the PatchStim (but possibly different initial values)
         whereas the ImageStim is designed to be use for non-cyclic images (photographs, not gratings).
         """
         GratingStim.__init__(self, *args, **kwargs)
+        self.setImage = self.setTex
 
 class RadialStim(GratingStim):
     """Stimulus object for drawing radial stimuli, like an annulus, a rotating wedge,
@@ -2445,10 +2608,10 @@ class RadialStim(GratingStim):
 
     Ideal for fMRI retinotopy stimuli!
 
-    Many of the capabilities are built on top of the PatchStim.
+    Many of the capabilities are built on top of the GratingStim.
 
     This stimulus is still relatively new and I'm finding occasional gliches. it also takes longer to draw
-    than a typical PatchStim, so not recommended for tasks where high frame rates are needed.
+    than a typical GratingStim, so not recommended for tasks where high frame rates are needed.
     """
     def __init__(self,
                  win,
@@ -2488,8 +2651,8 @@ class RadialStim(GratingStim):
                 - or the name of an image file (most formats supported)
                 - or a numpy array (1xN, NxNx1, NxNx3) ranging -1:1
 
-            mask :
-                Unlike the mask in the PatchStim, this is a 1-D mask dictating the behaviour
+            mask : **none** or 'gauss'
+                Unlike the mask in the GratingStim, this is a 1-D mask dictating the behaviour
                 from the centre of the stimulus to the surround.
             units : **None**, 'norm', 'cm', 'deg' or 'pix'
                 If None then the current units of the :class:`~psychopy.visual.Window` will be used.
@@ -2509,9 +2672,9 @@ class RadialStim(GratingStim):
                 100, the number of triangles used to make the sti
             radialPhase :
                 the phase of the texture from the centre to the perimeter
-                of the stimulus
+                of the stimulus (in radians)
             angularPhase :
-                the phase of the texture around the stimulus
+                the phase of the texture around the stimulus (in radians)
 
             color:
 
@@ -2527,12 +2690,12 @@ class RadialStim(GratingStim):
             colorSpace:
                 the color space controlling the interpretation of the `color`
                 See :ref:`colorspaces`
-            contrast : (default= *1.0* )
+            contrast : float (default= *1.0* )
                 How far the stimulus deviates from the middle grey.
                 Contrast can vary -1:1 (this is a multiplier for the
                 values given in the color description of the stimulus)
-            opacity :
-                1.0 is opaque, 0.0 is transparent
+            opacity : float (default=*1.0*)
+                Between 0.0 and 1.0. 1.0 is opaque, 0.0 is transparent
             depth:
                 The depth argument is deprecated and may be removed in future versions.
                 Depth is controlled simply by drawing order.
@@ -2555,11 +2718,11 @@ class RadialStim(GratingStim):
         self.angularCycles = angularCycles
         self.angularPhase = angularPhase
         self.contrast = float(contrast)
-        self.opacity = opacity
+        self.opacity = float(opacity)
         self.pos = numpy.array(pos, float)
         self.interpolate=interpolate
 
-        #these are defined by the PatchStim but will just cause confusion here!
+        #these are defined by the GratingStim but will just cause confusion here!
         self.setSF = None
         self.setPhase = None
         self.setSF = None
@@ -2632,12 +2795,12 @@ class RadialStim(GratingStim):
         self._updateTextureCoords()
         self.needUpdate=True
     def setAngularPhase(self,value, operation='', log=True):
-        """set the angular phase of the texture"""
+        """set the angular phase of the texture (radians)"""
         self._set('angularPhase', value, operation, log=log)
         self._updateTextureCoords()
         self.needUpdate=True
     def setRadialPhase(self,value, operation='', log=True):
-        """set the radial phase of the texture"""
+        """set the radial phase of the texture (radians)"""
         self._set('radialPhase', value, operation, log=log)
         self._updateTextureCoords()
         self.needUpdate=True
@@ -2665,11 +2828,7 @@ class RadialStim(GratingStim):
 
         if self._useShaders:
             #setup color
-            desiredRGB = (self.rgb*self.contrast+1)/2.0#RGB in range 0:1 and scaled for contrast
-            if numpy.any(desiredRGB>1.0) or numpy.any(desiredRGB<0):
-                logging.warning('Desired color %s (in RGB 0->1 units) falls outside the monitor gamut. Drawing blue instead'%desiredRGB) #AOH
-                desiredRGB=[0.0,0.0,1.0]
-
+            desiredRGB = self._getDesiredRGB(self.rgb, self.colorSpace, self.contrast)
             GL.glColor4f(desiredRGB[0],desiredRGB[1],desiredRGB[2], self.opacity)
 
             #assign vertex array
@@ -2817,7 +2976,7 @@ class RadialStim(GratingStim):
         """
         self.needUpdate=0
         GL.glNewList(self._listID,GL.GL_COMPILE)
-        GL.glColor4f(1.0,1.0,1.0,1.0)#glColor can interfere with multitextures
+        GL.glColor4f(1.0,1.0,1.0,self.opacity)#glColor can interfere with multitextures
 
         #assign vertex array
         GL.glVertexPointer(2, GL.GL_DOUBLE, 0, self._visibleXY.ctypes)
@@ -3557,7 +3716,7 @@ class ElementArrayStim:
         self._visXYZvertices[:,3,1] = self._XYsRendered[:,1] -wy - hy
 
         #depth
-        self._visXYZvertices[:,:,2] = numpy.tile(self.depths,(4,1)).T + self.fieldDepth
+        self._visXYZvertices[:,:,2] = numpy.tile(self.depths,(1,4)) + self.fieldDepth
 
         self.needVertexUpdate=False
 
@@ -3655,6 +3814,8 @@ class MovieStim(_BaseVisualStim):
                  ori     =0.0,
                  flipVert = False,
                  flipHoriz = False,
+                 color=(1.0,1.0,1.0),
+                 colorSpace='rgb',
                  opacity=1.0,
                  name='',
                  loop=False,
@@ -3682,6 +3843,23 @@ class MovieStim(_BaseVisualStim):
             size :
                 Size of the stimulus in units given. If not specified then the movie will take its
                 original dimensions.
+            color:
+                Modified the weight of the colors in the movie. E,g, color="red"
+                will only display the red parts of the movie and make all other
+                things black. white (color=(1,1,1)) is the original colors.
+
+                Could be a:
+
+                    - web name for a color (e.g. 'FireBrick');
+                    - hex value (e.g. '#FF0047');
+                    - tuple (1.0,1.0,1.0); list [1.0,1.0, 1.0]; or numpy array.
+
+                If the last three are used then the color space should also be given
+                See :ref:`colorspaces`
+
+            colorSpace:
+                the color space controlling the interpretation of the `color`
+                See :ref:`colorspaces`
             opacity :
                 the movie can be made transparent by reducing this
             name : string
@@ -3713,7 +3891,9 @@ class MovieStim(_BaseVisualStim):
         self.depth=depth
         self.flipVert = flipVert
         self.flipHoriz = flipHoriz
-        self.opacity = opacity
+        self.colorSpace=colorSpace
+        self.setColor(color, colorSpace=colorSpace, log=False)
+        self.opacity = float(opacity)
         self.loop = loop
         self.status=NOT_STARTED
 
@@ -3733,13 +3913,6 @@ class MovieStim(_BaseVisualStim):
         if win.winType!='pyglet':
             logging.Error('Movie stimuli can only be used with a pyglet window')
             core.quit()
-    def setOpacity(self,newOpacity,operation='', log=True):
-        """
-        Sets the opacity of the movie to `newOpacity`
-        """
-        # Over-rides _BaseVisualStim.setOpacity
-        self._set('opacity', newOpacity, operation, log=log)
-
     def setMovie(self, filename, log=True):
         """See `~MovieStim.loadMovie` (the functions are identical).
         This form is provided for syntactic consistency with other visual stimuli.
@@ -3816,7 +3989,7 @@ class MovieStim(_BaseVisualStim):
         """
         self._player.seek(float(timestamp))
         if log and self.autoLog:
-            self.win.logOnFlip("Set %s seek=" %(self.name,timestamp),
+            self.win.logOnFlip("Set %s seek=%f" %(self.name,timestamp),
                 level=logging.EXP,obj=self)
     def draw(self, win=None):
         """Draw the current frame to a particular visual.Window (or to the
@@ -3837,7 +4010,9 @@ class MovieStim(_BaseVisualStim):
         GL.glEnable(GL.GL_TEXTURE_2D)
 
         frameTexture = self._player.get_texture()
-        GL.glColor4f(1,1,1,self.opacity)
+
+        desiredRGB = self._getDesiredRGB(self.rgb, self.colorSpace, 1)  #Contrast=1
+        GL.glColor4f(desiredRGB[0],desiredRGB[1],desiredRGB[2],self.opacity)
         GL.glPushMatrix()
         #do scaling
         #scale the viewport to the appropriate size
@@ -3854,6 +4029,10 @@ class MovieStim(_BaseVisualStim):
                 height=self._sizeRendered[1]*flipBitY,
                 z=0)
         GL.glPopMatrix()
+
+    def setContrast(self):
+        """"Not yet implemented for MovieStim"""
+        pass
 
     def _onEos(self):
         if self.loop:
@@ -3892,6 +4071,7 @@ class TextStim(_BaseVisualStim):
                  color=(1.0,1.0,1.0),
                  colorSpace='rgb',
                  opacity=1.0,
+                 contrast=1.0,
                  units="",
                  ori=0.0,
                  height=None,
@@ -3902,6 +4082,7 @@ class TextStim(_BaseVisualStim):
                  alignVert='center',
                  fontFiles=[],
                  wrapWidth=None,
+                 horizMirror=False, vertMirror=False,
                  name='', autoLog=True):
         """
         :Parameters:
@@ -3925,7 +4106,11 @@ class TextStim(_BaseVisualStim):
             colorSpace:
                 the color space controlling the interpretation of the `color`
                 See :ref:`colorspaces`
-            opacity:
+            contrast: float (default= *1.0* )
+                How far the stimulus deviates from the middle grey.
+                Contrast can vary -1:1 (this is a multiplier for the
+                values given in the color description of the stimulus).
+            opacity: float (default= *1.0* )
                 How transparent the object will be (0 for transparent, 1 for opaque)
             units : **None**, 'height', 'norm', 'cm', 'deg' or 'pix'
                 If None then the current units of the :class:`~psychopy.visual.Window` will be used.
@@ -3948,6 +4133,10 @@ class TextStim(_BaseVisualStim):
                 A list of additional files if the font is not in the standard system location (include the full path)
             wrapWidth:
                 The width the text should run before wrapping
+            horizMirror : boolean
+                Mirror-reverse the text in the left-right direction
+            vertMirror : boolean
+                Mirror-reverse the text in the up-down direction
             name : string
                 The name of the object to be using during logged messages about
                 this stim
@@ -3960,8 +4149,8 @@ class TextStim(_BaseVisualStim):
         if win._haveShaders: self._useShaders=True
         else: self._useShaders=False
         self.needUpdate =1
-        self.opacity= opacity
-        self.contrast= 1.0
+        self.opacity = float(opacity)
+        self.contrast = float(contrast)
         self.alignHoriz = alignHoriz
         self.alignVert = alignVert
         self.antialias = antialias
@@ -3971,6 +4160,7 @@ class TextStim(_BaseVisualStim):
         self.depth=depth
         self.ori=ori
         self.wrapWidth=wrapWidth
+        self.mirror = [(1,-1)[horizMirror], (1,-1)[vertMirror], 1] # x, y, z
         self._pygletTextObj=None
 
         self.pos= numpy.array(pos, float)
@@ -4103,21 +4293,21 @@ class TextStim(_BaseVisualStim):
             self.win.logOnFlip("Set %s font=%s" %(self.name, self.fontname),
                 level=logging.EXP,obj=self)
 
-    def setText(self,value=None, log=True):
+    def setText(self,text=None, log=True):
         """Set the text to be rendered using the current font
         """
-        if value!=None:#make sure we have unicode object to render
-            value = unicode(value)
+        if text!=None:#make sure we have unicode object to render
+            self.text = unicode(text)
         if self._useShaders:
-            self._setTextShaders(value)
+            self._setTextShaders(text)
         else:
-            self._setTextNoShaders(value)
+            self._setTextNoShaders(text)
         self._needSetText=False
         if log and self.autoLog:
-            self.win.logOnFlip("Set %s text=%s" %(self.name, value),
+            self.win.logOnFlip("Set %s text=%s" %(self.name, text),
                 level=logging.EXP,obj=self)
-    def setRGB(self,value, operation='', log=True):
-        self._set('rgb', value, operation, log=log)
+    def setRGB(self, text, operation='', log=True):
+        self._set('rgb', text, operation, log=log)
         if not self._useShaders:
             self._needSetText=True
     def setColor(self, color, colorSpace=None, operation='', log=True):
@@ -4177,9 +4367,6 @@ class TextStim(_BaseVisualStim):
     def _setTextShaders(self,value=None):
         """Set the text to be rendered using the current font
         """
-        if value!=None:
-            self.text = value
-
         if self.win.winType=="pyglet":
             self._pygletTextObj = pyglet.font.Text(self._font, self.text,
                                                        halign=self.alignHoriz, valign=self.alignVert,
@@ -4282,15 +4469,7 @@ class TextStim(_BaseVisualStim):
     def _setTextNoShaders(self,value=None):
         """Set the text to be rendered using the current font
         """
-        if value!=None:
-            self.text = value
-        if self.colorSpace in ['rgb','dkl','lms','hsv']: #these spaces are 0-centred
-            desiredRGB = (self.rgb*self.contrast+1)/2.0#RGB in range 0:1 and scaled for contrast
-            if numpy.any(desiredRGB>1.0) or numpy.any(desiredRGB<0):
-                logging.warning('Desired color %s (in RGB 0->1 units) falls outside the monitor gamut. Drawing blue instead'%desiredRGB) #AOH
-                desiredRGB=[0.0,0.0,1.0]
-        else:
-            desiredRGB = (self.rgb*self.contrast)/255.0
+        desiredRGB = self._getDesiredRGB(self.rgb, self.colorSpace, self.contrast)
 
         if self.win.winType=="pyglet":
             self._pygletTextObj = pyglet.font.Text(self._font, self.text,
@@ -4398,17 +4577,11 @@ class TextStim(_BaseVisualStim):
         GL.glTranslatef(self._posRendered[0],self._posRendered[1],0)#NB depth is set already
         GL.glRotatef(-self.ori,0.0,0.0,1.0)
         win.setScale('pix', None, prevScale)#back to pixels for drawing surface
+        GL.glScalef(*self.mirror)
 
         if self._useShaders: #then rgb needs to be set as glColor
             #setup color
-            if self.colorSpace in ['rgb','dkl','lms','hsv']: #these spaces are 0-centred
-                desiredRGB = (self.rgb*self.contrast+1)/2.0#RGB in range 0:1 and scaled for contrast
-                if numpy.any(desiredRGB>1.0) or numpy.any(desiredRGB<0):
-                    logging.warning('Desired color %s (in RGB 0->1 units) falls outside the monitor gamut. Drawing blue instead'%desiredRGB) #AOH
-                    desiredRGB=[0.0,0.0,1.0]
-                GL.glColor4f(desiredRGB[0],desiredRGB[1],desiredRGB[2], self.opacity)
-            else:
-                desiredRGB = (self.rgb*self.contrast)/255.0
+            desiredRGB = self._getDesiredRGB(self.rgb, self.colorSpace, self.contrast)
             GL.glColor4f(desiredRGB[0],desiredRGB[1],desiredRGB[2], self.opacity)
 
             GL.glUseProgram(self.win._progSignedTexFont)#self.win._progSignedTex)
@@ -4453,11 +4626,19 @@ class TextStim(_BaseVisualStim):
         """Set this stimulus to use shaders if possible.
         """
         if val==True and self.win._haveShaders==False:
-            logging.warn("Shaders were requested for PatchStim but aren;t available. Shaders need OpenGL 2.0+ drivers")
+            logging.warn("Shaders were requested but aren;t available. Shaders need OpenGL 2.0+ drivers")
         if val!=self._useShaders:
             self._useShaders=val
             self._needSetText=True
             self.needUpdate=True
+    def overlaps(self, polygon):
+        """Not implemented for TextStim
+        """
+        pass
+    def contains(self, polygon):
+        """Not implemented for TextStim
+        """
+        pass
 
 class ShapeStim(_BaseVisualStim):
     """Create geometric (vector) shapes by defining vertex locations.
@@ -4486,6 +4667,7 @@ class ShapeStim(_BaseVisualStim):
                  size=1,
                  ori=0.0,
                  opacity=1.0,
+                 contrast=1.0,
                  depth  =0,
                  interpolate=True,
                  lineRGB=None,
@@ -4546,8 +4728,13 @@ class ShapeStim(_BaseVisualStim):
             ori : float or int
                 the shape can be rotated around the anchor
 
-            opacity : float
+            opacity : float (default= *1.0* )
                 1.0 is opaque, 0.0 is transparent
+
+            contrast: float (default= *1.0* )
+                How far the stimulus deviates from the middle grey.
+                Contrast can vary -1:1 (this is a multiplier for the
+                values given in the color description of the stimulus).
 
             depth:
                 The depth argument is deprecated and may be removed in future versions.
@@ -4564,7 +4751,8 @@ class ShapeStim(_BaseVisualStim):
 
         _BaseVisualStim.__init__(self, win, units=units, name=name, autoLog=autoLog)
 
-        self.opacity = opacity
+        self.contrast = float(contrast)
+        self.opacity = float(opacity)
         self.pos = numpy.array(pos, float)
         self.closeShape=closeShape
         self.lineWidth=lineWidth
@@ -4605,7 +4793,7 @@ class ShapeStim(_BaseVisualStim):
         """
         self._set('fillRGB', value, operation)
     def setLineColor(self, color, colorSpace=None, operation='', log=True):
-        """Sets the color of the shape edge. See :meth:`PatchStim.setColor`
+        """Sets the color of the shape edge. See :meth:`psychopy.visual.GratingStim.setColor`
         for further details of how to use this function.
         """
         _setColor(self,color, colorSpace=colorSpace, operation=operation,
@@ -4613,7 +4801,7 @@ class ShapeStim(_BaseVisualStim):
                     colorAttrib='lineColor',#the name for this color
                     log=log)
     def setFillColor(self, color, colorSpace=None, operation='', log=True):
-        """Sets the color of the shape fill. See :meth:`PatchStim.setColor`
+        """Sets the color of the shape fill. See :meth:`psychopy.visual.GratingStim.setColor`
         for further details of how to use this function.
 
         Note that shapes where some vertices point inwards will usually not
@@ -4693,17 +4881,12 @@ class ShapeStim(_BaseVisualStim):
         if nVerts>2: #draw a filled polygon first
             if self.fillRGB!=None:
                 #convert according to colorSpace
-                if self.fillColorSpace in ['rgb','dkl','lms','hsv']: #these spaces are 0-centred
-                    fillRGB = (self.fillRGB+1)/2.0#RGB in range 0:1 and scaled for contrast
-                else:fillRGB = self.fillRGB/255.0
+                fillRGB = self._getDesiredRGB(self.fillRGB, self.fillColorSpace, self.contrast)
                 #then draw
                 GL.glColor4f(fillRGB[0], fillRGB[1], fillRGB[2], self.opacity)
                 GL.glDrawArrays(GL.GL_POLYGON, 0, nVerts)
         if self.lineRGB!=None:
-                #convert according to colorSpace
-            if self.lineColorSpace in ['rgb','dkl','lms','hsv']: #these spaces are 0-centred
-                lineRGB = (self.lineRGB+1)/2.0#RGB in range 0:1 and scaled for contrast
-            else:lineRGB = self.lineRGB/255.0
+            lineRGB = self._getDesiredRGB(self.lineRGB, self.lineColorSpace, self.contrast)
             #then draw
             GL.glLineWidth(self.lineWidth)
             GL.glColor4f(lineRGB[0], lineRGB[1], lineRGB[2], self.opacity)
@@ -4725,44 +4908,14 @@ class ShapeStim(_BaseVisualStim):
             self._posRendered=psychopy.misc.cm2pix(self.pos, self.win.monitor)
         self._verticesRendered = self._verticesRendered * self.size
 
-    def contains(self, x, y=None):
-        """Determines if a point x,y is inside the shape.
-
-        Can accept: a) two args, x and y; b) one arg, as a point (x,y) that is
-        list-like; or c) an object with a getPos() method that returns x,y, such
-        as a mouse. Returns True if the point is within the area defined by `vertices`.
-        This handles complex shapes, including concavities and self-crossings.
-
-        See coder demo, shapeContains.py
-        """
-        if self.needVertexUpdate:
-            self._calcVerticesRendered()
-        if hasattr(x, 'getPos'):
-            x,y = x.getPos()
-        elif type(x) in [list, tuple, numpy.ndarray]:
-            x, y = x[0], x[1]
-        return pointInPolygon(x, y, self)
-
-    def overlaps(self, polygon):
-        """Determines if this shape intersects another one. If `polygon` is
-        a `ShapeStim` instance, will use (vertices + pos) as the polygon. Overlap
-        detection is only approximate; can fail with pointy shapes. Returns True
-        if the two shapes overlap.
-
-        See coder demo, shapeContains.py
-        """
-        if self.needVertexUpdate:
-            self._calcVerticesRendered()
-        return polygonsOverlap(self, polygon)
-
 class Polygon(ShapeStim):
-    """Creates a regular polygon (triangles, pentagrams, ...) as a special case of a `~psychopy.visual.ShapeStim`
+    """Creates a regular polygon (triangles, pentagrams, ...) as a special case of a :class:`~psychopy.visual.ShapeStim`
 
     (New in version 1.72.00)
     """
     def __init__(self, win, edges=3, radius=.5, **kwargs):
         """
-        Polygon accepts all input parameters that `~psychopy.visual.ShapeStim` accept, except for vertices and closeShape.
+        Polygon accepts all input parameters that :class:`~psychopy.visual.ShapeStim` accepts, except for vertices and closeShape.
 
         :Parameters:
 
@@ -4938,7 +5091,7 @@ class Line(ShapeStim):
             self.win.logOnFlip("Set %s start=%s" %(self.name, start),
                 level=logging.EXP,obj=self)
 
-    def setEnd(self, end):
+    def setEnd(self, end, log=True):
         """Changes the end point of the line. Argument should be a tuple, list
         or 2x1 array specifying the coordinates of the end point"""
         self.end = end
@@ -5026,12 +5179,12 @@ class ImageStim(_BaseVisualStim):
                 the color space controlling the interpretation of the `color`
                 See :ref:`colorspaces`
 
-            contrast:
+            contrast: float (default= *1.0* )
                 How far the stimulus deviates from the middle grey.
                 Contrast can vary -1:1 (this is a multiplier for the
                 values given in the color description of the stimulus).
 
-            opacity:
+            opacity: float (default= *1.0* )
                 1.0 is opaque, 0.0 is transparent
 
             texRes:
@@ -5061,7 +5214,7 @@ class ImageStim(_BaseVisualStim):
 
         self.ori = float(ori)
         self.contrast = float(contrast)
-        self.opacity = opacity
+        self.opacity = float(opacity)
         self.interpolate=interpolate
         self.flipHoriz = flipHoriz
         self.flipVert = flipVert
@@ -5070,6 +5223,7 @@ class ImageStim(_BaseVisualStim):
 
         self.colorSpace=colorSpace
         self.setColor(color, colorSpace=colorSpace, log=False)
+        self.rgbPedestal=[0,0,0]#does an rgb pedestal make sense for an image?
 
         #initialise textures for stimulus
         self.texID=GL.GLuint()
@@ -5267,13 +5421,7 @@ class ImageStim(_BaseVisualStim):
         GL.glRotatef(-self.ori,0.0,0.0,1.0)
         #the list just does the texture mapping
 
-        if self.colorSpace in ['rgb','dkl','lms','hsv']: #these spaces are 0-centred
-            desiredRGB = (self.rgb*self.contrast+1)/2.0#RGB in range 0:1 and scaled for contrast
-            if numpy.any(desiredRGB>1.0) or numpy.any(desiredRGB<0):
-                logging.warning('Desired color %s (in RGB 0->1 units) falls outside the monitor gamut. Drawing blue instead'%desiredRGB) #AOH
-                desiredRGB=[0.0,0.0,1.0]
-        else:
-            desiredRGB = (self.rgb*self.contrast)/255.0
+        desiredRGB = self._getDesiredRGB(self.rgb, self.colorSpace, self.contrast)
         GL.glColor4f(desiredRGB[0],desiredRGB[1],desiredRGB[2], self.opacity)
 
         if self.needUpdate: self._updateList()
@@ -5281,11 +5429,6 @@ class ImageStim(_BaseVisualStim):
 
         #return the view to previous state
         GL.glPopMatrix()
-    def setContrast(self,value,operation='', log=True):
-        self._set('contrast', value, operation, log=log)
-        #if we don't have shaders we need to rebuild the texture
-        if not self._useShaders:
-            self.setIm(self._imName)
     def setImage(self, value, log=True):
         """Set the image to be used for the stimulus to this new value
         """
@@ -5356,10 +5499,10 @@ class BufferImageStim(GratingStim):
         myTextStim = ...
         stimList = [mySimpleImageStim, myTextStim]
 
-        # draw stim list items & capture everything (slow):
+        # draw stim list items & capture (slow; see EXP log for time required):
         screenshot = visual.BufferImageStim(myWin, stim=stimList)
 
-        # render to screen (fast):
+        # render to screen (very fast, except for the first draw):
         while <conditions>:
             screenshot.draw()  # fast; can vary .ori, ._position, .opacity
             other_stuff.draw() # dynamic
@@ -5371,7 +5514,8 @@ class BufferImageStim(GratingStim):
         - 2010 Jeremy Gray
     """
     def __init__(self, win, buffer='back', rect=(-1, 1, 1, -1), sqPower2=False,
-        stim=(), interpolate=True, vertMirror=False, name='', autoLog=True):
+        stim=(), interpolate=True, vertMirror=False, horizMirror=False,
+        name='', autoLog=True):
         """
         :Parameters:
 
@@ -5385,9 +5529,11 @@ class BufferImageStim(GratingStim):
                 which is the area to capture from the screen, given in norm units.
                 default is fullscreen: [-1, 1, 1, -1]
             stim :
-                a list of item(s) to be drawn to the buffer in order, then captured.
-                each item needs to have its own .draw() method, and have the same
-                window as win
+                a list of item(s) to be drawn to the back buffer (in order). The back
+                buffer is first cleared (without the win being flip()ed), then stim items
+                are drawn, and finally the buffer (or part of it) is captured.
+                Each item needs to have its own .draw() method, and have the same
+                window as win.
             interpolate :
                 whether to use interpolation (default = True, generally good,
                 especially if you change the orientation)
@@ -5395,12 +5541,15 @@ class BufferImageStim(GratingStim):
                 - False (default) = use rect for size if OpenGL = 2.1+
                 - True = use square, power-of-two image sizes
             vertMirror :
-                whether to vertically flip (mirror) the captured image; default = False
+                vertically flip (mirror) the captured image; default = False
+            horizMirror :
+                horizontally flip (mirror) the captured image, default = False
             name : string
-                The name of the object to be using during logged messages about this stim
+                The name of the object to be using in log messages about this stim
         """
         # depends on: window._getRegionOfFrame
 
+        _clock = core.Clock()
         if len(list(stim)) > 0: # draw all stim to the back buffer
             win.clearBuffer()
             logging.debug('BufferImageStim.__init__: clearing back buffer')
@@ -5414,8 +5563,6 @@ class BufferImageStim(GratingStim):
                 except AttributeError:
                     logging.warning('BufferImageStim.__init__: "%s" failed to draw' % repr(stimulus))
 
-        self.vertMirror = vertMirror # used in .draw()
-
         # take a screenshot of the buffer using win._getRegionOfFrame():
         glversion = pyglet.gl.gl_info.get_version()
         if glversion >= '2.1' and not sqPower2:
@@ -5425,7 +5572,7 @@ class BufferImageStim(GratingStim):
                 logging.debug('BufferImageStim.__init__: defaulting to square power-of-2 sized image (%s)' % glversion )
             region = win._getRegionOfFrame(buffer=buffer, rect=rect, squarePower2=True)
 
-        # turn the RGBA region into a PatchStim()-like object:
+        # turn the RGBA region into a GratingStim()-like object:
         GratingStim.__init__(self, win, tex=region, units='pix',
                              interpolate=interpolate, name=name, autoLog=autoLog)
         # May 2012: GratingStim is ~3x faster to initialize than ImageStim, looks the same in the demo
@@ -5433,17 +5580,18 @@ class BufferImageStim(GratingStim):
         #ImageStim.__init__(self, win, image=region, units='pix', interpolate=interpolate, name=name, autoLog=autoLog)
 
         # to improve drawing speed, move these out of draw:
-        if self.colorSpace in ['rgb','dkl','lms','hsv']: #these spaces are 0-centred
-            self.desiredRGB = (self.rgb * self.contrast + 1) / 2.0 #RGB in range 0:1 and scaled for contrast
-            if numpy.any(self.desiredRGB>1.0) or numpy.any(self.desiredRGB<0):
-                logging.warning('Desired color %s (in RGB 0->1 units) falls outside the monitor gamut. Drawing blue instead'%desiredRGB) #AOH
-                self.desiredRGB=[0.0,0.0,1.0]
-        else:
-            self.desiredRGB = (self.rgb * self.contrast)/255.0
+        self.desiredRGB = self._getDesiredRGB(self.rgb, self.colorSpace, self.contrast)
 
         self.thisScale = 2.0/numpy.array(self.win.size)
+        if horizMirror:
+            self.thisScale *= [-1,1]
+        if vertMirror:
+            self.thisScale *= [1,-1]
+
+        logging.exp('BufferImageStim %s: took %.1fms to initialize' % (name, 1000 * _clock.getTime()))
 
     def setTex(self, tex, interpolate=True, log=True):
+        """(This is not typically called directly.)"""
         # setTex is called only once
         self._texName = tex
         id = self.texID
@@ -5451,10 +5599,7 @@ class BufferImageStim(GratingStim):
         useShaders = self._useShaders
         self.interpolate = interpolate
 
-        if self.vertMirror:
-            im = tex # looks backwards, but is correct
-        else:
-            im = tex.transpose(Image.FLIP_TOP_BOTTOM)
+        im = tex.transpose(Image.FLIP_TOP_BOTTOM)
         self.origSize=im.size
 
         #im = im.convert("RGBA") # should be RGBA because win._getRegionOfFrame() returns RGBA
@@ -5511,7 +5656,7 @@ class BufferImageStim(GratingStim):
         Allows dynamic position, size, rotation, color, and opacity.
         Limitations / bugs: not sure what happens with shaders & self._updateList()
         """
-        # this is copy & pasted from old PatchStim, then had stuff taken out for speed
+        # this is copy & pasted from old GratingStim, then had stuff taken out for speed
 
         if self.win.winType=='pyglet':
             self.win.winHandle.switch_to()
@@ -5608,6 +5753,8 @@ class RatingScale:
                 high=7,
                 lowAnchorText=None,
                 highAnchorText=None,
+                tickMarks=None,
+                labels=None,
                 precision=1,
                 textSizeFactor=1.0,
                 textColor='LightGray',
@@ -5622,6 +5769,7 @@ class RatingScale:
                 leftKeys='left',
                 rightKeys='right',
                 lineColor='White',
+                ticksAboveLine=True,
                 markerStyle='triangle',
                 markerColor=None,
                 markerStart=False,
@@ -5648,10 +5796,13 @@ class RatingScale:
         scale :
             string, explanation of the numbers to display to the subject, shown above the line;
             default = '<low>=not at all, <high>=extremely'
-            to suppress all text above the line, set `showScale=False`
+            to suppress all text above the line, set `showScale=False`,
+            if `labels` is not `False` and `choices` or `tickMarks` exists,
+            `scale` defaults to `False`.
         choices :
             a list of items which the subject can choose among;
-            (takes precedence over `low`, `high`, `lowAnchorText`, `highAnchorText`, `showScale`)
+            (takes precedence over `low`, `high`, `lowAnchorText`, `highAnchorText`, `showScale`,
+            `tickMarks`)
         low :
             lowest numeric rating / low anchor (integer, default = 1)
         high :
@@ -5660,6 +5811,18 @@ class RatingScale:
             text to dsiplay for the low end of the scale (default = numeric low value)
         highAnchorText :
             text to display for the high end of the scale (default = numeric high value)
+        tickMarks :
+            list of positions at which tick marks should be placed
+            (low and high need to be included if tick marks should be at the edges of the scale).
+            If None (the default), tick marks are placed automatically equally spaced,
+            one per integer value (auto-rescaling by a factor of 10 can happen to reduce visual clutter)
+        labels :
+            text to be placed at each tick mark as placed by tickMarks and controls where labels
+            of choices are displayed. Default is `None`.
+            If `None` and `choices`:  choices will be plotted at ticks and
+            `showAnchors=False`, but `scale` can be used for plotting above the line.
+            If `None` and  `tickMarks`: `tickMarks` will be used and `showAnchors=False`.
+            If False, no labels are plotted at ticj marks (i.e., restores old behavior of `choices`).
         precision :
             portions of a tick to accept as input [1, 10, 100], default = 1 tick (no fractional parts)
 
@@ -5698,6 +5861,8 @@ class RatingScale:
             a key or list of keys that mean "move rightwards", default = ['right']
         lineColor :
             color to use for the scale line, default = 'White'
+        ticksAboveLine :
+            should the tick marks be displayed above the line (the default) or below
         markerStyle :
             'triangle' (DarkBlue), 'circle' (DarkRed), or 'glow' (White)
         markerColor :
@@ -5708,7 +5873,7 @@ class RatingScale:
             how much the glow marker expands when moving to the right; 0=none, negative shrinks; try 10 or -10
         customMarker :
             allows for a user-defined marker; must have a `.draw()` method, such as a
-            :class:`~psychopy.visual.TextStim()` or :class:`~psychopy.visual.PatchStim()`
+            :class:`~psychopy.visual.TextStim()` or :class:`~psychopy.visual.GratingStim()`
         escapeKeys :
             keys that will quit the experiment, calling `core.quit()`. default = [ ] (none).
 
@@ -5781,7 +5946,8 @@ class RatingScale:
         # Generally make things well-behaved if the requested value(s) would be trouble:
         self._initFirst(showAccept, mouseOnly, singleClick, acceptKeys,
                         markerStart, low, high, precision, choices,
-                        lowAnchorText, highAnchorText, scale, showScale, showAnchors)
+                        lowAnchorText, highAnchorText, scale, showScale, showAnchors,
+                        tickMarks, labels, ticksAboveLine)
         self._initMisc(minTime, maxTime)
 
         # Set scale & position, key-bindings:
@@ -5789,10 +5955,10 @@ class RatingScale:
         self._initKeyBindings(self.acceptKeys, skipKeys, escapeKeys, leftKeys, rightKeys, allowSkip)
 
         # Construct the visual elements:
-        self._initLine(lineColor=lineColor)
+        self._initLine(lineColor=lineColor, tickMarks = tickMarks)
         self._initMarker(customMarker, markerExpansion, markerColor, markerStyle, self.tickSize)
         self._initTextElements(win, self.lowAnchorText, self.highAnchorText, self.scale,
-                            textColor, textFont, textSizeFactor, showValue)
+                            textColor, textFont, textSizeFactor, showValue, tickMarks)
         self._initAcceptBox(self.showAccept, acceptPreText, acceptText, self.markerColor,
                             self.textSizeSmall, textSizeFactor, self.textFont)
 
@@ -5801,6 +5967,9 @@ class RatingScale:
         if self.showScale:   self.visualDisplayElements += [self.scaleDescription]
         if self.showAnchors: self.visualDisplayElements += [self.lowAnchor, self.highAnchor]
         if self.showAccept:  self.visualDisplayElements += [self.acceptBox, self.accept]
+        if self.labelTexts:
+            for text in self.labels:
+                self.visualDisplayElements.append(text)
         self.visualDisplayElements += [self.line] # last b/c win xp had display issues for me in a VM
 
         # Final touches:
@@ -5810,7 +5979,8 @@ class RatingScale:
 
     def _initFirst(self, showAccept, mouseOnly, singleClick, acceptKeys,
                    markerStart, low, high, precision, choices,
-                   lowAnchorText, highAnchorText, scale, showScale, showAnchors):
+                   lowAnchorText, highAnchorText, scale, showScale, showAnchors,
+                   tickMarks, labels, ticksAboveLine):
         """some sanity checking; various things are set, especially those that are
         used later; choices, anchors, markerStart settings are handled here
         """
@@ -5820,6 +5990,8 @@ class RatingScale:
         self.acceptKeys = acceptKeys
         self.precision = precision
         self.showAnchors = bool(showAnchors)
+        self.labelTexts = None
+        self.ticksAboveLine = ticksAboveLine
 
         if not self.showAccept:
             # the accept button is the mouse-based way to accept the current response
@@ -5840,15 +6012,23 @@ class RatingScale:
             logging.warning("RatingScale %s: ignoring choices=[ ]; it requires 2 or more list elements" % self.name)
         if choices and len(list(choices)) >= 2:
             low = 0
-            high = len(list(choices)) - 1 # can be modified in anchors; do self.low there
-            # anchor text defaults to blank, unless low or highAnchorText is requested explicitly:
-            if lowAnchorText is None and highAnchorText is None:
-                self.showAnchors = False
+            high = len(list(choices)) - 1
+            if labels is False:
+                # anchor text defaults to blank, unless low or highAnchorText is requested explicitly:
+                if lowAnchorText is None and highAnchorText is None:
+                    self.showAnchors = False
+                else:
+                    self.lowAnchorText = unicode(lowAnchorText)
+                    self.highAnchorText = unicode(highAnchorText)
+                self.scale = '  '.join(map(unicode, choices)) # unicode for display
+                self.choices = choices
             else:
-                self.lowAnchorText = str(lowAnchorText)
-                self.highAnchorText = str(highAnchorText)
-            self.scale = '  '.join(map(str, choices)) # str for display
-            self.choices = choices
+                # anchor text is ignored when choices are present (HS, 16/11/2012)
+                self.showAnchors = False
+                self.labelTexts = choices
+                self.choices = choices
+                if self.scale == "<default>":
+                    self.scale = False
         else:
             self.choices = False
 
@@ -5865,6 +6045,19 @@ class RatingScale:
             self.high = self.low + 1
             self.precision = 100
 
+        if tickMarks:
+            if not(labels is False):
+                self.showAnchors = False # To avoid overplotting.
+                if labels is None:
+                    self.labelTexts = tickMarks
+                else:
+                    self.labelTexts = labels
+                if len(self.labelTexts) != len(tickMarks):
+                    logging.warning("RatingScale %s: len(labels) not equal to len(tickMarks), using tickMarcks as labels" % self.name)
+                    self.labelTexts = tickMarks
+                if self.scale == "<default>":
+                    self.scale = False
+
         # Marker preselected and valid? [do after anchors]
         if ( (type(markerStart) == float and self.precision > 1 or
                 type(markerStart) == int) and
@@ -5872,7 +6065,7 @@ class RatingScale:
             self.markerStart = markerStart
             self.markerPlacedAt = markerStart
             self.markerPlaced = True
-        elif type(markerStart) == str and type(self.choices) == list and markerStart in self.choices:
+        elif isinstance(markerStart, basestring) and type(self.choices) == list and markerStart in self.choices:
             self.markerStart = self.choices.index(markerStart)
             self.markerPlacedAt = markerStart
             self.markerPlaced = True
@@ -5990,7 +6183,7 @@ class RatingScale:
         else:
             self.enableRespKeys = False
 
-    def _initLine(self, lineColor='White'):
+    def _initLine(self, tickMarks, lineColor='White'):
         """define a ShapeStim to be a graphical line, with tick marks.
 
         ### Notes (JRG Aug 2010)
@@ -6029,10 +6222,23 @@ class RatingScale:
         adjust the scaling around the default by setting displaySizeFactor, stretchHoriz, or both.
         This means that the user / experimenter can just think of > 1 being expansion (and < 1 == contraction)
         relative to the default (internal) scaling, and not worry about the internal scaling.
+
+        ### Notes (HS November 2012)
+        To allow for labels at the ticks, the positions of the tick marks are saved in self.tickPositions.
+        If tickMarks, those positions are used instead of the automatic positions.
+
         """
 
         self.lineColor = lineColor
         self.lineColorSpace = 'rgb'
+
+
+        self.tickSize = 0.04 # vertical height of each tick, norm units
+        if self.ticksAboveLine:
+            tickSide = 1
+        else:
+            tickSide = -1
+
         self.tickMarks = float(self.high - self.low)
 
         # visually remap 10 ticks onto 1 tick in some conditions (= cosmetic only):
@@ -6040,7 +6246,9 @@ class RatingScale:
         if (self.low == 0 and self.tickMarks > 20 and int(self.tickMarks) % 10 == 0):
             self.autoRescaleFactor = 10
             self.tickMarks /= self.autoRescaleFactor
-        self.tickSize = 0.04 # vertical height of each tick, norm units
+        if tickMarks:
+            tmpTicks = (numpy.asarray(tickMarks, dtype=numpy.float32) - self.low) / (self.high - self.low)
+
 
         # ends of the rating line, in norm units:
         self.lineLeftEnd  = self.offsetHoriz - 0.5 * self.stretchHoriz * self.displaySizeFactor
@@ -6055,15 +6263,27 @@ class RatingScale:
             (self.lineRightEnd + pad, -2 * pad + self.offsetVert) ])
 
         # vertices for ShapeStim:
+        self.tickPositions = [] #empty list for obtaining horizontal position of tick marks
         vertices = [[self.lineLeftEnd, self.offsetVert]] # first vertex
-        for t in range(int(self.tickMarks) + 1):
-            vertices.append([self.offsetHoriz + self.stretchHoriz * self.displaySizeFactor *
-                    (-0.5 + t / self.tickMarks), self.tickSize * self.displaySizeFactor + self.offsetVert])
-            vertices.append([self.offsetHoriz + self.stretchHoriz * self.displaySizeFactor *
-                    (-0.5 + t / self.tickMarks), self.offsetVert])
-            if t < self.tickMarks: # extend the line to the next tick mark, t + 1
+        if not(tickMarks):
+            for t in range(int(self.tickMarks) + 1):
                 vertices.append([self.offsetHoriz + self.stretchHoriz * self.displaySizeFactor *
-                                 (-0.5 + (t + 1) / self.tickMarks), self.offsetVert])
+                        (-0.5 + t / self.tickMarks), tickSide * self.tickSize * self.displaySizeFactor + self.offsetVert])
+                vertices.append([self.offsetHoriz + self.stretchHoriz * self.displaySizeFactor *
+                        (-0.5 + t / self.tickMarks), self.offsetVert])
+                if t < self.tickMarks: # extend the line to the next tick mark, t + 1
+                    vertices.append([self.offsetHoriz + self.stretchHoriz * self.displaySizeFactor *
+                                     (-0.5 + (t + 1) / self.tickMarks), self.offsetVert])
+                self.tickPositions.append(self.offsetHoriz + self.stretchHoriz * self.displaySizeFactor * (-0.5 + t / self.tickMarks))
+        else:
+            lineLength = self.lineRightEnd - self.lineLeftEnd
+
+            for c, t in enumerate(tmpTicks):
+                vertices.append([self.lineLeftEnd + lineLength * t, tickSide * self.tickSize * self.displaySizeFactor + self.offsetVert])
+                vertices.append([self.lineLeftEnd + lineLength * t, self.offsetVert])
+                if c < (len(tmpTicks) - 1):
+                    vertices.append([self.lineLeftEnd + lineLength * tmpTicks[c+1], self.offsetVert])
+                self.tickPositions.append(self.lineLeftEnd + lineLength * t)
         vertices.append([self.lineRightEnd, self.offsetVert])
         vertices.append([self.lineLeftEnd, self.offsetVert])
 
@@ -6073,7 +6293,7 @@ class RatingScale:
                               name=self.name+'.line')
 
     def _initMarker(self, customMarker, markerExpansion, markerColor, markerStyle, tickSize):
-        """define a PatchStim or ShapeStim to be used as the indicator
+        """define a GratingStim or ShapeStim to be used as the indicator
         """
         # preparatory stuff:
         self.markerStyle = markerStyle
@@ -6087,7 +6307,7 @@ class RatingScale:
         self.markerExpansion = float(markerExpansion) * 0.6
 
         self.markerColor = markerColor
-        if markerColor and type(markerColor) == str:
+        if markerColor and isinstance(markerColor, basestring):
             markerColor = markerColor.replace(' ','')
 
         # decide how to define self.marker:
@@ -6102,9 +6322,9 @@ class RatingScale:
                 else:
                     customMarker.color = 'DarkBlue'
                 markerColor = customMarker.color
-                if not hasattr(marker, 'name'):
-                    marker.name = 'customMarker'
-        elif self.markerStyle == 'triangle': # and sys.platform in ['linux2', 'darwin']):
+                if not hasattr(self.marker, 'name'):
+                    self.marker.name = 'customMarker'
+        elif self.markerStyle == 'triangle':
             vertices = [[-1 * tickSize * self.displaySizeFactor * 1.8, tickSize * self.displaySizeFactor * 3],
                     [ tickSize * self.displaySizeFactor * 1.8, tickSize * self.displaySizeFactor * 3], [0, -0.005]]
             if markerColor == None:
@@ -6159,7 +6379,7 @@ class RatingScale:
         self.markerColor = markerColor
 
     def _initTextElements(self, win, lowAnchorText, highAnchorText, scale, textColor,
-                          textFont, textSizeFactor, showValue):
+                          textFont, textSizeFactor, showValue, tickMarks):
         """creates TextStim for self.scaleDescription, self.lowAnchor, self.highAnchor
         """
         # text appearance (size, color, font, visibility):
@@ -6176,11 +6396,11 @@ class RatingScale:
         if lowAnchorText:
             lowText = unicode(lowAnchorText)
         else:
-            lowText = unicode(str(self.low))
+            lowText = unicode(self.low)
         if highAnchorText:
             highText = unicode(highAnchorText)
         else:
-            highText = unicode(str(self.high))
+            highText = unicode(self.high)
         self.lowAnchorText = lowText
         self.highAnchorText = highText
         if not scale:
@@ -6190,24 +6410,35 @@ class RatingScale:
 
         # create the TextStim:
         self.scaleDescription = TextStim(win=self.win, height=self.textSizeSmall,
-                                    color=self.textColor, colorSpace=self.textColorSpace,
-                                    pos=[self.offsetHoriz, 0.22 * self.displaySizeFactor + self.offsetVert],
-                                    name=self.name+'.scale')
+            color=self.textColor, colorSpace=self.textColorSpace,
+            pos=[self.offsetHoriz, 0.22 * self.displaySizeFactor + self.offsetVert],
+            wrapWidth=2 * self.stretchHoriz * self.displaySizeFactor,
+            name=self.name+'.scale')
         self.scaleDescription.setFont(textFont)
         self.lowAnchor = TextStim(win=self.win,
-                            pos=[self.offsetHoriz - 0.5 * self.stretchHoriz * self.displaySizeFactor,
-                            -2 * self.textSizeSmall * self.displaySizeFactor + self.offsetVert],
-                            height=self.textSizeSmall, color=self.textColor, colorSpace=self.textColorSpace,
-                            name=self.name+'.lowAnchor')
+            pos=[self.offsetHoriz - 0.5 * self.stretchHoriz * self.displaySizeFactor,
+                 -2 * self.textSizeSmall * self.displaySizeFactor + self.offsetVert],
+            height=self.textSizeSmall,
+            color=self.textColor, colorSpace=self.textColorSpace,
+            name=self.name+'.lowAnchor')
         self.lowAnchor.setFont(textFont)
         self.lowAnchor.setText(lowText)
         self.highAnchor = TextStim(win=self.win,
-                            pos=[self.offsetHoriz + 0.5 * self.stretchHoriz * self.displaySizeFactor,
-                            -2 * self.textSizeSmall * self.displaySizeFactor + self.offsetVert],
-                            height=self.textSizeSmall, color=self.textColor, colorSpace=self.textColorSpace,
-                            name=self.name+'.highAnchor')
+            pos=[self.offsetHoriz + 0.5 * self.stretchHoriz * self.displaySizeFactor,
+                 -2 * self.textSizeSmall * self.displaySizeFactor + self.offsetVert],
+            height=self.textSizeSmall,
+            color=self.textColor, colorSpace=self.textColorSpace,
+            name=self.name+'.highAnchor')
         self.highAnchor.setFont(textFont)
         self.highAnchor.setText(highText)
+        self.labels = []
+        if self.labelTexts:
+            for c, lab in enumerate(self.labelTexts):
+                self.labels.append(TextStim(win = self.win, text = unicode(lab),
+                    pos = [self.tickPositions[c], -2 * self.textSizeSmall * self.displaySizeFactor + self.offsetVert],
+                    height=self.textSizeSmall,
+                    color=self.textColor, colorSpace=self.textColorSpace,
+                    name=self.name+'.tickLabel.'+unicode(lab), font = textFont))
         self.setDescription(scale) # do after having set the relevant things
     def setDescription(self, scale):
         """Method to set the description that appears above the line, (e.g., "1=not at all...extremely=7")
@@ -6234,9 +6465,14 @@ class RatingScale:
         self.acceptLineColor = [-.2, -.2, -.2]
         self.acceptFillColor = [.2, .2, .2]
 
+        if self.labelTexts:
+            boxVert = [0.3, 0.47]
+        else:
+            boxVert = [0.2, 0.37]
+
         # define self.acceptBox:
-        self.acceptBoxtop  = acceptBoxtop  = self.offsetVert - 0.2 * self.displaySizeFactor * textSizeFactor
-        self.acceptBoxbot  = acceptBoxbot  = self.offsetVert - 0.37 * self.displaySizeFactor * textSizeFactor
+        self.acceptBoxtop  = acceptBoxtop  = self.offsetVert - boxVert[0] * self.displaySizeFactor * textSizeFactor
+        self.acceptBoxbot  = acceptBoxbot  = self.offsetVert - boxVert[1] * self.displaySizeFactor * textSizeFactor
         self.acceptBoxleft = acceptBoxleft = self.offsetHoriz - 0.2 * self.displaySizeFactor * textSizeFactor
         self.acceptBoxright = acceptBoxright = self.offsetHoriz + 0.2 * self.displaySizeFactor * textSizeFactor
 
@@ -6252,7 +6488,7 @@ class RatingScale:
             [acceptBoxright-3*delta2,acceptBoxbot+delta2], [acceptBoxright-delta,acceptBoxbot],
             [acceptBoxleft+delta,acceptBoxbot], [acceptBoxleft+3*delta2,acceptBoxbot+delta2],
             [acceptBoxleft+delta2,acceptBoxbot+3*delta2], [acceptBoxleft,acceptBoxbot+delta] ]
-        if sys.platform not in ['linux2']:
+        if not sys.platform.startswith('linux'):
             self.acceptBox = ShapeStim(win=self.win, vertices=acceptBoxVertices,
                             fillColor=self.acceptFillColor, lineColor=self.acceptLineColor,
                             name=self.name+'.accept')
@@ -6334,7 +6570,7 @@ class RatingScale:
             self.noResponse = False
             self.timedOut = True
             logging.data('RatingScale %s: rating=%s (no response, timed out after %.3fs)' %
-                         (self.name, str(self.getRating()), self.maximumTime) )
+                         (self.name, unicode(self.getRating()), self.maximumTime) )
             logging.data('RatingScale %s: rating RT=%.3fs' % (self.name, self.getRT()) ) # getRT() should not be None here, cuz timedout
 
         # 'disappear' == draw nothing if subj is done:
@@ -6393,7 +6629,7 @@ class RatingScale:
                 self.accept.setColor(self.acceptTextColor)
                 if self.showValue and self.markerPlacedAt is not False:
                     if self.choices:
-                        val = str(self.choices[int(self.markerPlacedAt)])
+                        val = unicode(self.choices[int(self.markerPlacedAt)])
                     else:
                         val = self.fmtStr % ((self.markerPlacedAt + self.low) * self.autoRescaleFactor )
                     self.accept.setText(val)
@@ -6417,7 +6653,7 @@ class RatingScale:
                         self.noResponse = False
                         self.marker.setPos((0, self.offsetVert), '+')
                         logging.data('RatingScale %s: (key single-click) rating=%s' %
-                                     (self.name, str(self.getRating())) )
+                                     (self.name, unicode(self.getRating())) )
                 if key in self.leftKeys:
                     if self.markerPlaced and self.markerPlacedAt > 0:
                         self.markerPlacedAt = max(0, self.markerPlacedAt - 1. / self.autoRescaleFactor / self.precision)
@@ -6428,7 +6664,7 @@ class RatingScale:
                 if (self.markerPlaced and key in self.acceptKeys and self.myClock.getTime() > self.minimumTime):
                     self.noResponse = False
                     logging.data('RatingScale %s: (key response) rating=%s' %
-                                     (self.name, str(self.getRating())) )
+                                     (self.name, unicode(self.getRating())) )
 
         # handle mouse:
         if self.myMouse.getPressed()[0]: # if mouse (left click) is pressed...
@@ -6439,14 +6675,14 @@ class RatingScale:
                 if (self.singleClick and self.myClock.getTime() > self.minimumTime):
                     self.noResponse = False
                     logging.data('RatingScale %s: (mouse single-click) rating=%s' %
-                                 (self.name, str(self.getRating())) )
+                                 (self.name, unicode(self.getRating())) )
             # if in accept box, and a value has been selected, and enough time has elapsed:
             if self.showAccept:
                 if (self.markerPlaced and self.myClock.getTime() > self.minimumTime and
                         self.acceptBox.contains(mouseX, mouseY)):
                     self.noResponse = False # accept the currently marked value
                     logging.data('RatingScale %s: (mouse response) rating=%s' %
-                                (self.name, str(self.getRating())) )
+                                (self.name, unicode(self.getRating())) )
 
         # decision time = time from the first .draw() to when 'accept' was pressed:
         if not self.noResponse and self.decisionTime == 0:
@@ -6575,18 +6811,32 @@ class Aperture:
 
         GL.glPopMatrix()
 
-    def setSize(self, size, needReset=True):
+    def setSize(self, size, needReset=True, log=True):
         """Set the size (diameter) of the Aperture
         """
         self.size = size
         self._calcSizeRendered()
         if needReset: self._reset()
-    def setPos(self, pos, needReset=True):
+        if log and self.autoLog:
+             self.win.logOnFlip("Set %s size=%s" %(self.name, size),
+                 level=logging.EXP,obj=self)
+    def setOri(self, ori, needReset=True, log=True):
+        """Set the orientation of the Aperture
+        """
+        self.ori = ori
+        if needReset: self._reset()
+        if log and self.autoLog:
+             self.win.logOnFlip("Set %s ori=%s" %(self.name, ori),
+                 level=logging.EXP,obj=self)
+    def setPos(self, pos, needReset=True, log=True):
         """Set the pos (centre) of the Aperture
         """
         self.pos = numpy.array(pos)
         self._calcPosRendered()
         if needReset: self._reset()
+        if log and self.autoLog:
+             self.win.logOnFlip("Set %s pos=%s" %(self.name, pos),
+                 level=logging.EXP,obj=self)
     def _calcSizeRendered(self):
         """Calculate the size of the stimulus in coords of the :class:`~psychopy.visual.Window` (normalised or pixels)"""
         if self.units in ['norm','pix', 'height']: self._sizeRendered=self.size
@@ -6688,8 +6938,8 @@ class CustomMouse():
             self.setPointer(pointer)
         else:
             #self.pointer = TextStim(win, text='+')
-            self.pointer = PatchStim(win,
-                    tex=os.path.join(os.path.split(__file__)[0], 'pointer.png'), sf=1)
+            self.pointer = ImageStim(win,
+                    image=os.path.join(os.path.split(__file__)[0], 'pointer.png'))
         self.mouse.setVisible(False) # hide the actual (system) mouse
         self.visible = visible # the custom (virtual) mouse
 
@@ -6947,9 +7197,11 @@ def createTexture(tex, id, pixFormat, stim, res=128, maskParams=None, forcePOW2=
         intensity = intensity / numpy.max(intensity)
 
         #Sometimes there are some remaining artifacts from this process, get rid of them:
-        artifact_idx = numpy.where(numpy.logical_and(intensity == -1, rad < 1))
+        artifact_idx = numpy.where(numpy.logical_and(intensity == -1,
+                                                     rad < 0.99))
         intensity[artifact_idx] = 1
-        artifact_idx = numpy.where(numpy.logical_and(intensity == 1, rad > 1))
+        artifact_idx = numpy.where(numpy.logical_and(intensity == 1, rad >
+                                                     0.99))
         intensity[artifact_idx] = 0
 
     else:
@@ -6971,8 +7223,8 @@ def createTexture(tex, id, pixFormat, stim, res=128, maskParams=None, forcePOW2=
             try:
                 im = tex.copy().transpose(Image.FLIP_TOP_BOTTOM) # ? need to flip if in mem?
             except AttributeError: # nope, not an image in memory
-                logging.error("Couldn't make sense of requested PatchStim."); logging.flush()
-                raise AttributeError, "Couldn't make sense of requested PatchStim."#ensure we quit
+                logging.error("Couldn't make sense of requested image."); logging.flush()
+                raise AttributeError, "Couldn't make sense of requested image."#ensure we quit
         # at this point we have a valid im
         stim.origSize=im.size
         #is it 1D?
@@ -7106,7 +7358,13 @@ def pointInPolygon(x, y, poly):
 
     # faster if have matplotlib.nxutils:
     if haveNxutils:
-        return bool(nxutils.pnpoly(x, y, poly))
+        try:
+            return bool(nxutils.pnpoly(x, y, poly))
+            # has failed with matplotlib 1.2.0-r1
+            #   transform = transform.frozen()
+            # AttributeError: 'numpy.float64' object has no attribute 'frozen'
+        except:
+            pass
 
     # fall through to pure python:
     # as adapted from http://local.wasp.uwa.edu.au/~pbourke/geometry/insidepoly/
@@ -7143,9 +7401,11 @@ def polygonsOverlap(poly1, poly2):
 
     # faster if have matplotlib.nxutils:
     if haveNxutils:
-        if any(nxutils.points_inside_poly(poly1, poly2)):
-            return True
-        return any(nxutils.points_inside_poly(poly2, poly1))
+        try: # has failed with matplotlib 1.2.0-r1
+            if any(nxutils.points_inside_poly(poly1, poly2)):
+                return True
+            return any(nxutils.points_inside_poly(poly2, poly1))
+        except: pass
 
     # fall through to pure python:
     for p1 in poly1:
@@ -7155,6 +7415,7 @@ def polygonsOverlap(poly1, poly2):
         if pointInPolygon(p2[0], p2[1], poly1):
             return True
     return False
+
 
 def _setTexIfNoShaders(obj):
     """Useful decorator for classes that need to update Texture after other properties
@@ -7242,12 +7503,20 @@ def _setColor(self, color, colorSpace=None, operation='',
     newColor=getattr(self, colorAttrib)
     if colorSpace in ['rgb','rgb255']: setattr(self,rgbAttrib, newColor)
     elif colorSpace=='dkl':
-        if numpy.all(win.dkl_rgb==numpy.ones([3,3])):dkl_rgb=None
-        else: dkl_rgb=win.dkl_rgb
+        if numpy.all(win.dkl_rgb==numpy.ones([3,3])):
+            dkl_rgb=None
+        else:
+            dkl_rgb=win.dkl_rgb
         setattr(self,rgbAttrib, colors.dkl2rgb(numpy.asarray(newColor).transpose(), dkl_rgb) )
     elif colorSpace=='lms':
-        if numpy.all(win.lms_rgb==numpy.ones([3,3])):lms_rgb=None
-        else: lms_rgb=win.lms_rgb
+        if numpy.all(win.lms_rgb==numpy.ones([3,3])):
+            lms_rgb=None
+        elif win.monitor.getPsychopyVersion()<'1.76.00':
+            logging.error("The LMS calibration for this monitor was carried out before version 1.76.00." +\
+                      " We would STRONGLY recommend that you repeat the color calibration before using this color space (contact Jon for further info)")
+            lms_rgb=win.lms_rgb
+        else:
+            lms_rgb=win.lms_rgb
         setattr(self,rgbAttrib, colors.lms2rgb(newColor, lms_rgb) )
     elif colorSpace=='hsv':
         setattr(self,rgbAttrib, colors.hsv2rgb(numpy.asarray(newColor)) )
@@ -7295,7 +7564,7 @@ def getMsPerFrame(myWin, nFrames=60, showVisual=False, msg='', msDelay=0.):
         showText = False
     if showVisual:
         x,y = myWin.size
-        myStim = PatchStim(myWin, tex='sin', mask='gauss',
+        myStim = GratingStim(myWin, tex='sin', mask='gauss',
             size=[.6*y/float(x),.6], sf=3.0, opacity=.2,
             autoLog=False)
     clockt = [] # clock times
@@ -7325,7 +7594,7 @@ def getMsPerFrame(myWin, nFrames=60, showVisual=False, msg='', msDelay=0.):
         elif showText:
             myMsg.draw()
         if doWait:
-            wait(delayTime)
+            core.wait(delayTime)
         drawt.append(core.getTime())
         myWin.flip()
     rush(False)
