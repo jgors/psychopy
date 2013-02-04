@@ -289,7 +289,7 @@ def xydist(p1=[0.0,0.0],p2=[0.0,0.0]):
 
 
 #NOTE this might not work as a class method; might need to be a func outside of the class
-def __parallel_serial_proc(#self, 
+def _parallel_serial_proc(#self, 
         serial_port, baudrate,
         mlist_subjects_responses, mlist_trs):
 
@@ -353,7 +353,7 @@ class SerialPortEvents:
         mlist_trs = manager.list()
 
         global multi_proc
-        multi_proc = multiprocessing.Process(target=__parallel_serial_proc, 
+        multi_proc = multiprocessing.Process(target=_parallel_serial_proc, 
                         args=(serialPortAddress, baudrate, mlist_subjects_responses, mlist_trs))
 
         multi_proc.start()
