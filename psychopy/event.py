@@ -354,7 +354,7 @@ class SerialPortEvents:
 
         global multi_proc
         multi_proc = multiprocessing.Process(target=__parallel_serial_proc, 
-                        args=(serial_port, baudrate, mlist_subjects_responses, mlist_trs))
+                        args=(serialPortAddress, baudrate, mlist_subjects_responses, mlist_trs))
 
         multi_proc.start()
 
