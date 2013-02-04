@@ -293,7 +293,7 @@ def __parallel_serial_proc(#self,
         serial_port, baudrate,
         mlist_subjects_responses, mlist_trs):
 
-    ser = serial.Serial(serialPortAddress, baudrate, timeout=0.0001)
+    ser = serial.Serial(serial_port, baudrate, timeout=0.0001)
     ser.flushInput()
 
     while True:
