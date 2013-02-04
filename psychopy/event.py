@@ -288,7 +288,7 @@ def xydist(p1=[0.0,0.0],p2=[0.0,0.0]):
     return numpy.sqrt(pow(p1[0]-p2[0],2)+pow(p1[1]-p2[1],2))
 
 
-#NOTE this might not work as a class method; might need to be a func outside of the class
+#NOTE better as a func outside of the SerialPortEvents class rather than a class method
 def _parallel_serial_proc(#self, 
         serial_port, baudrate,
         mlist_subjects_responses, mlist_trs):
@@ -313,15 +313,15 @@ def _parallel_serial_proc(#self,
 
 
 class SerialPortEvents:
-    """A use case for this would be in fMRI research, where subject 
-    responses are collected not from keyboard input, but via a button box connected 
-    through a serial port (or usb-to-serial port adaptor).  Additionally, this class can 
-    gather scanner trigger pulses, which can then be used to sync your presentation 
-    script with the scanner TR's. 
+    """A use case for this would be in fMRI research, where subject responses are  
+    often collected not from keyboard input, but via a button box connected 
+    through a serial port (or usb-to-serial port adaptor).
+    Additionally, this can also be used to monitor scanner trigger pulses, which 
+    can then be used to sync your presentation script with the scanner TR's. 
     NOTE, it is expected that you are using at least a dual-core machine, as this script 
     spawns a parallel process, which allows the serial port to gather all of it's 
     info (eg. button presses and scanner tiggers) without taking away any resources from 
-    the presentation part of your script -- this allows very accurate time stamps from the serial port.
+    the main presentation part of your script; this allows very accurate time stamps from the serial port.
 
     :Parameters:
         serialPortAddress : depends on operating system. GNU/Linux: '/dev/ttyUSB0' or Windows: 'COM3' 
@@ -362,7 +362,7 @@ class SerialPortEvents:
 
 
     def killSerial(self):
-        """Should execute this at the end of your script, right before core.quit()
+        """Need to execute this at the end of your script, right before core.quit()
         """
         multi_proc.terminate()
 
@@ -370,13 +370,12 @@ class SerialPortEvents:
     def clearSerialBuffer(self):
         """Used to clear out the events from the parallel process that is gathering the serial port info. 
         """
-        #if eventType=='serialport':
         junk = [mlist_subjects_responses.pop(0) for i in range(len(mlist_subjects_responses))] 
         junk = [mlist_trs.pop(0) for i in range(len(mlist_trs))] 
 
 
     def getSerialKeys(self, keyList=None, timeStamped=False):
-        """Returns a list of keys that were gathered via serial port.  
+        """Returns a list of keys that were gathered via the serial port.  
         :Parameters:
             keyList : **None** or []
                 Allows the user to specify a set of keys to check for coming in through the serial port.
@@ -391,23 +390,18 @@ class SerialPortEvents:
 
         if timeStamped: # if want time stamps, give back the tuple: [(key, time_pressed),...]
             resps = [tup for tup in mlist_subjects_responses] 
-        else: # else if not wanting time stamps, give back just all of the keys: ['key', ...]
-            resps = [k[0] for k in mlist_subjects_responses]
-
-        
+        else: # else if not wanting time stamps, just give back the keys pressed: ['key', ...]
+            resps = [tup[0] for tup in mlist_subjects_responses]
 
         if keyList:
-            try:
-                resps = [k for k in resps if k in keyList] # if not time stamped
-            except:
-                resps = [(k,t) for k,t in resps if k in keyList] # if were time stamped
-        else:
-            #resps = [k for k in resps]
-            pass
-
+            if timeStamped:
+                resps = [tup for tup in resps if tup[0] in keyList]
+            else:
+                resps = [k for k in resps if k in keyList]
+                
+        # reset mlist_subjects_responses to have nothing in it 
         junk = [mlist_subjects_responses.pop(0) for i in range(len(mlist_subjects_responses))]
         return resps
-        #return [mlist_subjects_responses.pop(0) for i in range(len(mlist_subjects_responses))]
 
 
     def getSerialTRs(self, TR, timeStamped=False):
@@ -426,10 +420,11 @@ class SerialPortEvents:
         else: # else if not wanting time stamps, give back just tr chars: ['char', ...]
             trs = [c[0] for c in mlist_trs]
 
-        try:
-            trs = [c for c in trs if c in [TR]] # if not time stamped
-        except: #TODO make exeception more explicit
-            trs = [(c,t) for c,t in trs if c in [TR]] # if were time stamped
+        if keyList:
+            if timeStamped:
+                trs = [tup for tup in trs if str(tup[0])==str(TR)]
+            else:
+                trs = [c for c in trs if str(c)==str(TR)]
 
         junk = [mlist_trs.pop(0) for i in range(len(mlist_trs))]
         return trs
