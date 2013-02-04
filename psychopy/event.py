@@ -392,10 +392,16 @@ class SerialPortEvents:
         else: # else if not wanting time stamps, give back just all of the keys: ['key', ...]
             resps = [k[0] for k in mlist_subjects_responses]
 
-        try:
-            resps = [k for k in resps if k in keyList] # if not time stamped
-        except: #TODO make exeception more explicit
-            resps = [(k,t) for k,t in resps if k in keyList] # if were time stamped
+        
+
+        if keyList:
+            try:
+                resps = [k for k in resps if k in keyList] # if not time stamped
+            except:
+                resps = [(k,t) for k,t in resps if k in keyList] # if were time stamped
+        else:
+            #resps = [k for k in resps]
+            pass
 
         junk = [mlist_subjects_responses.pop(0) for i in range(len(mlist_subjects_responses))]
         return resps
