@@ -13,6 +13,7 @@ import psychopy.core, psychopy.misc
 from psychopy import logging
 from psychopy.constants import *
 import string, numpy
+import multiprocessing, serial
 
 #try to import pyglet & pygame and hope the user has at least one of them!
 try:
@@ -243,6 +244,7 @@ def getKeys(keyList=None, timeStamped=False):
     elif timeStamped==True:
         return targets
 
+
 def waitKeys(maxWait=float('inf'), keyList=None, timeStamped=False):
     """
     Same as `~psychopy.event.getKeys`, but halts everything (including drawing) while awaiting
@@ -284,6 +286,159 @@ def xydist(p1=[0.0,0.0],p2=[0.0,0.0]):
     """Helper function returning the cartesian distance between p1 and p2
     """
     return numpy.sqrt(pow(p1[0]-p2[0],2)+pow(p1[1]-p2[1],2))
+
+
+class SerialPortEvents:
+    """A use case for this would be in fMRI research, where subject 
+    responses are collected not from keyboard input, but via a button box connected 
+    through a serial port (or usb-to-serial port adaptor).  Additionally, this class can 
+    gather scanner trigger pulses, which can then be used to sync your presentation 
+    script with the scanner TR's. 
+    NOTE, it is expected that you are using at least a dual-core machine, as this script 
+    spawns a parallel process, which allows the serial port to gather all of it's 
+    info (eg. button presses and scanner tiggers) without taking away any resources from 
+    the presentation part of your script -- this allows very accurate time stamps from the serial port.
+
+    :Parameters:
+        serialPortAddress : depends on operating system. GNU/Linux: '/dev/ttyUSB0' or Windows: 'COM3' 
+            must specify where the serial port looks for incoming information.
+        baudrate : 9600, 19200, etc 
+            must specify the rate at which the serial port looks for incoming information.
+            
+        see port and baudrate: http://pyserial.sourceforge.net/pyserial_api.html
+    :Author:
+        - 2013 written by Jason Gors
+    """
+
+    def __init__(self, 
+                 serialPortAddress,
+                 baudrate):
+
+        #self.serialPortAddress = serialPortAddress
+        #self.baudrate = baudrate
+
+    #def __set_up_parallel_proc(self):
+    #serial_port = self.serialPortAddress
+    #baudrate = self.baudrate
+
+        manager = multiprocessing.Manager()
+
+        global mlist_subjects_responses
+        mlist_subjects_responses = manager.list()
+
+        global mlist_trs
+        mlist_trs = manager.list()
+
+        global multi_proc
+        multi_proc = multiprocessing.Process(target=__parallel_serial_proc, 
+                        args=(serial_port, baudrate, mlist_subjects_responses, mlist_trs))
+
+        multi_proc.start()
+
+    #NOTE this might not work as a class method; might need to be a func outside of the class
+    def __parallel_serial_proc(#self, 
+            serial_port, baudrate,
+            mlist_subjects_responses, mlist_trs):
+
+        ser = serial.Serial(serialPortAddress, baudrate, timeout=0.0001)
+        ser.flushInput()
+
+        while True:
+            char = ser.read()
+
+            #keys_inWaiting = ser.inWaiting()
+            #if keys_inWaiting > 0:
+                #char = ser_main_proc.read(keys_inWaiting)
+                #responses = [c for c in str(ks_present_thisTrial)]
+
+            if char:
+                msg = (char, time.time())
+                if char == '5': ### scanner trigger pulses
+                    mlist_trs.append(char)
+                if char in ['1', '2', '3', '4']: ### allowed subject responses
+                    mlist_subjects_responses.append(msg) ### works
+
+
+    def killSerial(self):
+        """Should execute this at the end of your script, right before core.quit()
+        """
+        multi_proc.terminate()
+
+
+    def clearSerialBuffer(self):
+        """Used to clear out the events from the parallel process that is gathering the serial port info. 
+        """
+        #if eventType=='serialport':
+        junk = [mlist_subjects_responses.pop(0) for i in range(len(mlist_subjects_responses))] 
+        junk = [mlist_trs.pop(0) for i in range(len(mlist_trs))] 
+
+
+    def getSerialKeys(self, keyList=None, timeStamped=False):
+        """Returns a list of keys that were gathered via serial port.  
+        :Parameters:
+            keyList : **None** or []
+                Allows the user to specify a set of keys to check for coming in through the serial port.
+                Only keys from this set of keys will be removed from the serial port buffer.
+                If the keyList is None, then all keys will be checked and the key buffer will be cleared
+                completely. 
+            timeStamped : **False** or True or `Clock`
+                If True will return a list of
+                tuples instead of a list of keynames. Each tuple has (keyname, time).
+                If a `core.Clock` is given then the time will be relative to the `Clock`'s last reset            
+        """
+
+        if timeStamped: # if want time stamps, give back the tuple: [(key, time_pressed),...]
+            resps = [tup for tup in mlist_subjects_responses] 
+        else: # else if not wanting time stamps, give back just all of the keys: ['key', ...]
+            resps = [k[0] for k in mlist_subjects_responses]
+
+        try:
+            resps = [k for k in resps if k in keyList] # if not time stamped
+        except: #TODO make exeception more explicit
+            resps = [(k,t) for k,t in resps if k in keyList] # if were time stamped
+
+        junk = [mlist_subjects_responses.pop(0) for i in range(len(mlist_subjects_responses))]
+        return resps
+        #return [mlist_subjects_responses.pop(0) for i in range(len(mlist_subjects_responses))]
+
+
+    def getSerialTRs(self, TR, timeStamped=False):
+        """
+        :Parameters:
+            TR : ASCII string of what the TR is that's sent (eg. '5')
+                This will return all of the TRs sent  
+            timeStamped : **False** or True or `Clock`
+                If True will return a list of
+                tuples instead of a list of just the TRs. Each tuple has (TR, time).
+                If a `core.Clock` is given then the time will be relative to the `Clock`'s last reset
+        """
+
+        if timeStamped: # if want time stamps, give back the tuple: [(char, time_pressed),...]
+            trs = [tup for tup in mlist_trs] 
+        else: # else if not wanting time stamps, give back just tr chars: ['char', ...]
+            trs = [c[0] for c in mlist_trs]
+
+        try:
+            trs = [c for c in trs if c in [TR]] # if not time stamped
+        except: #TODO make exeception more explicit
+            trs = [(c,t) for c,t in trs if c in [TR]] # if were time stamped
+
+        junk = [mlist_trs.pop(0) for i in range(len(mlist_trs))]
+        return trs
+
+
+    def waitTRs(self, TR, numberTRs):
+        """Can be used to wait for the specified number of TRs before moving on in the script.
+        :Parameters:
+            TR : ASCII string of what the TR is that's sent (eg. '5')
+            numberTRs : int specifying the number of trigger pulses that should be obtained before advancing.
+                This will cause the script to wait until the of the appropriate number of TRs  is sent.
+                (Eg. at the end of a trial, wait for [numberTRs] before starting the next trial.)
+
+        """
+        while list(mlist_trs) != [TR]*numberTRs:
+            pass
+
 
 class Mouse:
     """Easy way to track what your mouse is doing.
