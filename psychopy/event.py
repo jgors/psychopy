@@ -310,29 +310,6 @@ class SerialPortEvents:
         - 2013 written by Jason Gors
     """
 
-    #NOTE this might not work as a class method; might need to be a func outside of the class
-    def _parallel_serial_proc(#self, 
-            serial_port, baudrate,
-            mlist_subjects_responses, mlist_trs):
-
-        ser = serial.Serial(serial_port, baudrate, timeout=0.0001)
-        ser.flushInput()
-
-        while True:
-            char = ser.read()
-
-            #keys_inWaiting = ser.inWaiting()
-            #if keys_inWaiting > 0:
-                #char = ser_main_proc.read(keys_inWaiting)
-                #responses = [c for c in str(ks_present_thisTrial)]
-
-            if char:
-                msg = (char, time.time())
-                if char == '5': ### scanner trigger pulses
-                    mlist_trs.append(char)
-                if char in ['1', '2', '3', '4']: ### allowed subject responses
-                    mlist_subjects_responses.append(msg) ### works
-
 
     def __init__(self, 
                  serialPortAddress,
@@ -360,6 +337,28 @@ class SerialPortEvents:
         multi_proc.start()
 
 
+    #NOTE this might not work as a class method; might need to be a func outside of the class
+    def _parallel_serial_proc(self, 
+            serial_port, baudrate,
+            mlist_subjects_responses, mlist_trs):
+
+        ser = serial.Serial(serial_port, baudrate, timeout=0.0001)
+        ser.flushInput()
+
+        while True:
+            char = ser.read()
+
+            #keys_inWaiting = ser.inWaiting()
+            #if keys_inWaiting > 0:
+                #char = ser_main_proc.read(keys_inWaiting)
+                #responses = [c for c in str(ks_present_thisTrial)]
+
+            if char:
+                msg = (char, time.time())
+                if char == '5': ### scanner trigger pulses
+                    mlist_trs.append(char)
+                if char in ['1', '2', '3', '4']: ### allowed subject responses
+                    mlist_subjects_responses.append(msg) ### works
 
 
     def killSerial(self):
