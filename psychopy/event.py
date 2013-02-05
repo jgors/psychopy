@@ -307,7 +307,8 @@ def _parallel_serial_proc(#self,
         if char:
             msg = (char, time.time())
             if char == trChar: #'5': ### scanner trigger pulses
-                mlist_trs.append(char)
+                #mlist_trs.append(char)
+                mlist_trs.append(msg)
 
             #if char in ['1', '2', '3', '4']: ### allowed subject responses
             if char != trChar: # ### everything else (hopefully only subject responses)
@@ -320,9 +321,9 @@ class SerialPortEvents:
     through a serial port (or usb-to-serial port adaptor).
     Additionally, this can also be used to monitor scanner trigger pulses, which 
     can then be used to sync your presentation script with the scanner TR's. 
-    NOTE, it is expected that you are using at least a dual-core machine, as this script 
+    Note, it is expected that you are using at least a dual-core machine, as this script 
     spawns a parallel process, which allows the serial port to gather all of it's 
-    info (eg. button presses and scanner tiggers) without taking away any resources from 
+    info (eg. button presses and scanner tiggers) without taking any resources away from 
     the main presentation part of your script; this allows very accurate time stamps to 
     collected from the serial port.
 
@@ -362,13 +363,15 @@ class SerialPortEvents:
 
 
     def killSerial(self):
-        """Need to execute this at the end of your script, right before core.quit()
+        """This needs to be executed at the end of your script, to close the serial port process,
+        right before core.quit() would be executed.
         """
         multi_proc.terminate()
 
 
     def clearSerialBuffer(self):
-        """Used to clear out the events from the parallel process that is gathering the serial port info. 
+        """This is used to clear out the events from the serial port buffer that is gathering the subject response
+        and scanner trigger info. 
         """
         junk = [mlist_subjects_responses.pop(0) for i in range(len(mlist_subjects_responses))] 
         junk = [mlist_trs.pop(0) for i in range(len(mlist_trs))] 
@@ -379,18 +382,18 @@ class SerialPortEvents:
         :Parameters:
             keyList : **None** or []
                 Allows the user to specify a set of keys to check for coming in through the serial port.
-                Only keys from this set of keys will be removed from the serial port buffer.
-                If the keyList is None, then all keys will be checked and the key buffer will be cleared
-                completely. 
+                Only keys from this list of keys will be returned from the serial port buffer.
+                If the keyList is None (default), then all keys will be returned.  
+                After calling this the key buffer will be cleared. 
             timeStamped : **False** or True or `Clock`
-                If True will return a list of
-                tuples instead of a list of keynames. Each tuple has (keyname, time).
-                #If a `core.Clock` is given then the time will be relative to the `Clock`'s last reset            
+                If True, will return a list of tuples instead of just a list of keynames. 
+                Each tuple has (keyname, time).
+                #If a `core.Clock` is given, then the time will be relative to the `Clock`'s last reset            
         """
 
         if timeStamped: # if want time stamps, give back the tuple: [(key, time_pressed),...]
             resps = [tup for tup in mlist_subjects_responses] 
-        else: # else if not wanting time stamps, just give back the keys pressed: ['key', ...]
+        else: # else if not wanting time stamps, only give back the keys pressed: ['key', ...]
             resps = [tup[0] for tup in mlist_subjects_responses]
 
         if keyList:
@@ -405,14 +408,12 @@ class SerialPortEvents:
 
 
     def getSerialTRs(self, timeStamped=False):
-        """
+        """This returns all of the trigger pulses that have been sent up until that point, until 
+            you call clearSerialBuffer()  
         :Parameters:
-            #TR : ASCII string of what the TR is that's being sent (eg. '5')
-                #This will return all of the TRs that have been sent up to that point, until 
-                #you call clearSerialBuffer()  
             timeStamped : **False** or True or `Clock`
-                If True will return a list of tuples instead of a list of just the 
-                TRs -- each tuple will have: (TR, time).
+                If True, will return a list of tuples instead of just a list of the triggers sent; 
+                Each tuple will have: (TR, time).
                 #If a `core.Clock` is given then the time will be relative to the `Clock`'s last reset
         """
 
@@ -434,10 +435,9 @@ class SerialPortEvents:
     def waitTRs(self, numberTRs):
         """Can be used to wait for the specified number of TRs before moving on in the script.
         :Parameters:
-            #TR : ASCII string of what the TR is that's sent (eg. '5')
             numberTRs : int specifying the number of trigger pulses that should be obtained before advancing.
-                This will cause the script to wait until the of the appropriate number of TRs  is sent.
-                (Eg. at the end of a trial, wait for [numberTRs] before starting the next trial.)
+                This will cause the script to wait until the specified number of trigger pulses are sent.
+                Eg. at the end of a trial, wait for numberTRs before starting the next trial.
 
         """
         TR = self.trChar
