@@ -290,7 +290,7 @@ def xydist(p1=[0.0,0.0],p2=[0.0,0.0]):
 
 #NOTE better as a func outside of the SerialPortEvents class rather than a class method
 def _parallel_serial_proc(#self, 
-        serial_port, baudrate,
+        serial_port, baudrate, trChar,
         mlist_subjects_responses, mlist_trs):
 
     ser = serial.Serial(serial_port, baudrate, timeout=0.0001)
@@ -306,9 +306,11 @@ def _parallel_serial_proc(#self,
 
         if char:
             msg = (char, time.time())
-            if char == '5': ### scanner trigger pulses
+            if char == trChar: #'5': ### scanner trigger pulses
                 mlist_trs.append(char)
-            if char in ['1', '2', '3', '4']: ### allowed subject responses
+
+            #if char in ['1', '2', '3', '4']: ### allowed subject responses
+            if char != trChar: # ### everything else (hopefully only subject responses)
                 mlist_subjects_responses.append(msg) ### works
 
 
@@ -321,30 +323,28 @@ class SerialPortEvents:
     NOTE, it is expected that you are using at least a dual-core machine, as this script 
     spawns a parallel process, which allows the serial port to gather all of it's 
     info (eg. button presses and scanner tiggers) without taking away any resources from 
-    the main presentation part of your script; this allows very accurate time stamps from the serial port.
+    the main presentation part of your script; this allows very accurate time stamps to 
+    collected from the serial port.
 
     :Parameters:
-        serialPortAddress : depends on operating system. GNU/Linux: '/dev/ttyUSB0' or Windows: 'COM3' 
+        serialPortAddress : operating system dependant. GNU/Linux: '/dev/ttyUSB0'; Windows: 'COM3' 
             must specify where the serial port looks for incoming information.
         baudrate : 9600, 19200, etc 
-            must specify the rate at which the serial port looks for incoming information.
-            
-        see port and baudrate: http://pyserial.sourceforge.net/pyserial_api.html
+            must specify the rate at which the serial port looks for the incoming information.
+        trChar : ASCII str of what the scanner trigger pulses appear as on your system.
+            eg. '5'
+
+        *this class uses pyserial, so see port and baudrate for specific details: 
+        http://pyserial.sourceforge.net/pyserial_api.html
+
     :Author:
         - 2013 written by Jason Gors
     """
 
 
-    def __init__(self, 
-                 serialPortAddress,
-                 baudrate):
+    def __init__(self, serialPortAddress, baudrate, trChar):
 
-        #self.serialPortAddress = serialPortAddress
-        #self.baudrate = baudrate
-
-    #def __set_up_parallel_proc(self):
-    #serial_port = self.serialPortAddress
-    #baudrate = self.baudrate
+        self.TR = trChar
 
         manager = multiprocessing.Manager()
 
@@ -356,7 +356,7 @@ class SerialPortEvents:
 
         global multi_proc
         multi_proc = multiprocessing.Process(target=_parallel_serial_proc, 
-                        args=(serialPortAddress, baudrate, mlist_subjects_responses, mlist_trs))
+                        args=(serialPortAddress, baudrate, trChar, mlist_subjects_responses, mlist_trs))
 
         multi_proc.start()
 
@@ -385,7 +385,7 @@ class SerialPortEvents:
             timeStamped : **False** or True or `Clock`
                 If True will return a list of
                 tuples instead of a list of keynames. Each tuple has (keyname, time).
-                If a `core.Clock` is given then the time will be relative to the `Clock`'s last reset            
+                #If a `core.Clock` is given then the time will be relative to the `Clock`'s last reset            
         """
 
         if timeStamped: # if want time stamps, give back the tuple: [(key, time_pressed),...]
@@ -404,15 +404,16 @@ class SerialPortEvents:
         return resps
 
 
-    def getSerialTRs(self, TR, timeStamped=False):
+    def getSerialTRs(self, timeStamped=False):
         """
         :Parameters:
-            TR : ASCII string of what the TR is that's sent (eg. '5')
-                This will return all of the TRs sent  
+            #TR : ASCII string of what the TR is that's being sent (eg. '5')
+                #This will return all of the TRs that have been sent up to that point, until 
+                #you call clearSerialBuffer()  
             timeStamped : **False** or True or `Clock`
-                If True will return a list of
-                tuples instead of a list of just the TRs. Each tuple has (TR, time).
-                If a `core.Clock` is given then the time will be relative to the `Clock`'s last reset
+                If True will return a list of tuples instead of a list of just the 
+                TRs -- each tuple will have: (TR, time).
+                #If a `core.Clock` is given then the time will be relative to the `Clock`'s last reset
         """
 
         if timeStamped: # if want time stamps, give back the tuple: [(char, time_pressed),...]
@@ -420,26 +421,28 @@ class SerialPortEvents:
         else: # else if not wanting time stamps, give back just tr chars: ['char', ...]
             trs = [c[0] for c in mlist_trs]
 
-        if keyList:
-            if timeStamped:
-                trs = [tup for tup in trs if str(tup[0])==str(TR)]
-            else:
-                trs = [c for c in trs if str(c)==str(TR)]
+        #if keyList:
+            #if timeStamped:
+                #trs = [tup for tup in trs if str(tup[0])==str(TR)]
+            #else:
+                #trs = [c for c in trs if str(c)==str(TR)]
 
         junk = [mlist_trs.pop(0) for i in range(len(mlist_trs))]
         return trs
 
 
-    def waitTRs(self, TR, numberTRs):
+    def waitTRs(self, numberTRs):
         """Can be used to wait for the specified number of TRs before moving on in the script.
         :Parameters:
-            TR : ASCII string of what the TR is that's sent (eg. '5')
+            #TR : ASCII string of what the TR is that's sent (eg. '5')
             numberTRs : int specifying the number of trigger pulses that should be obtained before advancing.
                 This will cause the script to wait until the of the appropriate number of TRs  is sent.
                 (Eg. at the end of a trial, wait for [numberTRs] before starting the next trial.)
 
         """
+        TR = self.trChar
         while list(mlist_trs) != [TR]*numberTRs:
+            # TODO make it so responses can be gathered during this time 
             pass
 
 
